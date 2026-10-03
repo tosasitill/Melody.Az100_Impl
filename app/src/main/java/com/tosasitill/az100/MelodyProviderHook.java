@@ -105,6 +105,13 @@ public final class MelodyProviderHook {
     /** When the wear flag last actually changed. Heartbeats stop after the window. */
     private static volatile long wearChangedAt;
     private static volatile boolean installed;
+    /** Bumped on every ACL transition so a late hide cannot overtake a reconnect. */
+    private static volatile int aclDropGeneration;
+    /** Retries after a connect: 1s, 3s, 8s. No further notifies. */
+    private static final long[] WEAR_RETRY_MS = {1000L, 3000L, 8000L};
+    private static volatile int wearBurstGeneration;
+    /** The provider query is the one chance to reach an already-registered observer. */
+    private static volatile boolean wearDeliveredToQuery;
 
     private MelodyProviderHook() {
     }
@@ -116,6 +123,9 @@ public final class MelodyProviderHook {
         }
         context = ctx;
         if (ctx != null) Logs.traceToFile(ctx.getExternalFilesDir(null));
+        // The detail activity runs in Melody's :fg process and is independent
+        // of the provider signatures used by SystemUI.
+        MelodyDetailBatteryHook.install(loader);
         try {
             Class<?> provider = XposedHelpers.findClass(PROVIDER, loader);
             XposedHelpers.findAndHookMethod(provider, "query",
@@ -138,6 +148,10 @@ public final class MelodyProviderHook {
             hookMelodyBluetoothReceiver(loader);
             watchAz100Connection(ctx);
             hookBatteryProvider(loader);
+            if (ctx != null && DirectAirohaController.audioProfileConnected(ctx)) {
+                DirectAirohaController.setPresent(true);
+                startWearBurst();
+            }
             Logs.trace("melody hooks installed");
             Logs.i("melody provider hooks installed");
         } catch (Throwable t) {
@@ -165,6 +179,7 @@ public final class MelodyProviderHook {
             // wear flag alone (see announceWear).  Answering unconditionally
             // also covers a stale "explicitly gone" ACL hint left over from a
             // disconnect that happened before this process started.
+            Logs.trace("provider active");
             announceReachable();
             return activeCursor();
         }
@@ -174,6 +189,10 @@ public final class MelodyProviderHook {
             return batteryCursor();
         }
         if (PATH_NOISE.equals(path)) {
+            // EarphoneController.getType() on this ROM always queries with
+            // selection="address" and the active device MAC. Keep that gate:
+            // a loose match can answer another headset's query with the AZ100
+            // row, while a mismatch must fall through to Melody.
             if (!"address".equals(selection) || args == null || args.length == 0) return null;
             if (!Az100Hook.isAz100Mac(args[0])) return null;
             // 2+ entries in "noise" is the second isAvailable() condition;
@@ -181,6 +200,7 @@ public final class MelodyProviderHook {
             announceReachable();
             // SystemUI hits this from media-route callbacks, not only when the
             // panel is open. syncOnce latches, so this cannot redial.
+            Logs.trace("provider noise mode=" + noiseMode);
             syncIfNeeded();
             return noiseCursor();
         }
@@ -376,7 +396,18 @@ public final class MelodyProviderHook {
         Context ctx = context;
         boolean reachable = ctx != null
                 && DirectAirohaController.reachable(ctx, Az100Hook.AZ100_MAC);
-        announceWear(reachable);
+        // A stale ACL-absent latch must not keep the tile hidden while audio is
+        // still up. Closing our own short-lived SPP socket can be reported as
+        // ACL_DISCONNECTED even though A2DP/HFP never dropped.
+        if (!reachable && ctx != null && DirectAirohaController.audioProfileConnected(ctx)) {
+            DirectAirohaController.setPresent(true);
+            reachable = true;
+            Logs.trace("wear restored, audio profile still connected");
+        }
+        // A provider query means SystemUI has just registered its observer.
+        // Deliver the current wear flag once for this connection; do not repeat
+        // it on later queries.
+        announceWear(reachable, true);
         return reachable;
     }
 
@@ -386,18 +417,26 @@ public final class MelodyProviderHook {
      * It does not keep firing for the rest of the connection.
      */
     private static void announceWear(boolean wornNow) {
+        announceWear(wornNow, false);
+    }
+
+    private static void announceWear(boolean wornNow, boolean fromQuery) {
         long now = SystemClock.elapsedRealtime();
         boolean changed = wornNow != worn;
         if (!changed) {
-            // A few repeats cover a late observer. Then stop, even if SystemUI
-            // keeps querying the provider.
-            if (now - wearChangedAt > WEAR_HEARTBEAT_WINDOW_MS) return;
-            if (now - lastWearAt < WEAR_HEARTBEAT_MS) return;
+            if (fromQuery && wornNow && !wearDeliveredToQuery) {
+                wearDeliveredToQuery = true;
+            } else if (now - wearChangedAt > WEAR_HEARTBEAT_WINDOW_MS
+                    || now - lastWearAt < WEAR_HEARTBEAT_MS) {
+                return;
+            }
         } else {
             worn = wornNow;
             wearChangedAt = now;
+            if (!wornNow) wearDeliveredToQuery = false;
             Logs.trace("wear announce worn=" + wornNow);
         }
+        if (fromQuery && wornNow) wearDeliveredToQuery = true;
         lastWearAt = now;
         notifyChange(wornNow ? FLAG_WEAR | WEAR_BITS : FLAG_WEAR);
     }
@@ -429,12 +468,12 @@ public final class MelodyProviderHook {
         BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
         if (device == null || !Az100Hook.isAz100Mac(device.getAddress())) return;
         if (BluetoothDevice.ACTION_ACL_CONNECTED.equals(action)) {
+            cancelAclDrop();
             DirectAirohaController.setPresent(true);
-            announceWear(true);
+            startWearBurst();
             syncIfNeeded();
         } else if (BluetoothDevice.ACTION_ACL_DISCONNECTED.equals(action)) {
-            DirectAirohaController.setPresent(false);
-            announceWear(false);
+            confirmAclGone(context);
         }
     }
 
@@ -450,21 +489,99 @@ public final class MelodyProviderHook {
                             intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
                     if (device == null || !Az100Hook.isAz100Mac(device.getAddress())) return;
                     if (BluetoothDevice.ACTION_ACL_CONNECTED.equals(intent.getAction())) {
+                        cancelAclDrop();
                         DirectAirohaController.setPresent(true);
-                        if (!worn) announceWear(true);
+                        startWearBurst();
                         syncIfNeeded();
                     } else {
-                        // Headset is gone: drop the SPP socket and hide the tile.
-                        DirectAirohaController.setPresent(false);
-                                    DirectAirohaController.disconnect(receiver, Az100Hook.AZ100_MAC,
-                                "acl gone");
-                        if (worn) announceWear(false);
+                        // Do not hide the tile inside the broadcast. An SPP close
+                        // can emit ACL_DISCONNECTED while the audio profiles are
+                        // still connected; confirm after they have settled.
+                        confirmAclGone(receiver);
                     }
                 }
             }, filter);
         } catch (Throwable t) {
             Logs.e("melody ACL receiver failed", t);
         }
+    }
+
+
+
+    /**
+     * {@code earState} stays at the last value SystemUI observed. One notify
+     * before its observer exists is lost, but a forever timer is unnecessary.
+     * Retry only three times after the connection is seen, then stop.
+     */
+    private static void startWearBurst() {
+        final int generation = ++wearBurstGeneration;
+        wearDeliveredToQuery = false;
+        announceWear(true);
+        Thread burst = new Thread(new Runnable() {
+            @Override public void run() {
+                long waited = 0L;
+                for (long delay : WEAR_RETRY_MS) {
+                    try {
+                        Thread.sleep(delay - waited);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                    waited = delay;
+                    if (generation != wearBurstGeneration || !installed) return;
+                    Context ctx = context;
+                    if (ctx == null || !DirectAirohaController.audioProfileConnected(ctx)) return;
+                    notifyChange(FLAG_WEAR | WEAR_BITS);
+                    lastWearAt = SystemClock.elapsedRealtime();
+                    Logs.trace("wear retry +" + delay + "ms");
+                }
+            }
+        }, "az100-wear-burst");
+        burst.setDaemon(true);
+        burst.start();
+    }
+
+    private static void cancelAclDrop() {
+        aclDropGeneration++;
+    }
+
+    /**
+     * ACL_DISCONNECTED is not by itself proof that the AZ100 left this phone.
+     * The battery refresh opens and closes one RFCOMM socket; this stack can
+     * report that socket teardown as an ACL drop. Recheck the public audio
+     * profile states before clearing {@code earState}, which is the flag
+     * {@code NoiseReductionDetailTile.isAvailable()} requires to be non-zero.
+     */
+    private static void confirmAclGone(Context ctx) {
+        final int generation = ++aclDropGeneration;
+        final Context app = ctx == null || ctx.getApplicationContext() == null
+                ? ctx : ctx.getApplicationContext();
+        Thread check = new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    Thread.sleep(1200L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                if (generation != aclDropGeneration) return;
+                if (DirectAirohaController.audioProfileConnected(app)) {
+                    Logs.trace("acl disconnect ignored, audio profile still connected");
+                    DirectAirohaController.setPresent(true);
+                    announceWear(true);
+                    return;
+                }
+                Logs.trace("acl disconnect confirmed");
+                wearBurstGeneration++;
+                DirectAirohaController.setPresent(false);
+                if (app != null) {
+                    DirectAirohaController.disconnect(app, Az100Hook.AZ100_MAC, "acl gone");
+                }
+                announceWear(false);
+            }
+        }, "az100-acl-check");
+        check.setDaemon(true);
+        check.start();
     }
 
     private static void notifyChange(int flags) {

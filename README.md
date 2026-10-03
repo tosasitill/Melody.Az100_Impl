@@ -7,8 +7,9 @@ LSPosed 模块，只注入 `com.oplus.melody`。音量二级菜单的降噪磁�
 
 不加载、不反射 `com.panasonic.technicsaudioconnect`。Audio Connect 可以卸载。
 
-长按磁贴会进入 Melody 自己的详情页。AZ100 没有 Melody 耳机记录，那个页面会停在
-加载中。本模块不再替换这个页面。
+长按磁贴会进入 Melody 的 AZ100 耳机详情页。模块保留 Activity/工具栏，跳过不支持
+AZ100 的原生产品加载，提供连接状态、左右耳和充电盒电量，以及“立即刷新电量”按钮。
+刷新时先读取主耳方向，再等待电量请求的 ACK 和异步通知，收到数据后才关闭 SPP。
 
 ## 构建
 
@@ -37,6 +38,7 @@ adb logcat -s AZ100:V
 | --- | --- |
 | `Az100Hook` | 只在 `com.oplus.melody` 加载，转给 `MelodyProviderHook` |
 | `MelodyProviderHook` | 应答音量面板的 active/noise query 和点击 |
+| `MelodyDetailBatteryHook` | 在 Melody 耳机详情页提供手动电量刷新 |
 | `DirectAirohaController` | 按次打开 SPP，发完即关 |
 | `AirohaRace` | H4/RACE 分帧 |
 

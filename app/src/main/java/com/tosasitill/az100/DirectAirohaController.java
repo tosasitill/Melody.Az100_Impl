@@ -12,6 +12,7 @@ import android.os.SystemClock;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -63,6 +64,20 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 final class DirectAirohaController {
 
+    interface BatteryRefreshCallback {
+        void onComplete(int[] values, boolean receivedFreshSample);
+    }
+
+    private static final class PendingBatteryRefresh {
+        final BatteryRefreshCallback callback;
+        final long startUpdates;
+
+        PendingBatteryRefresh(BatteryRefreshCallback callback, long startUpdates) {
+            this.callback = callback;
+            this.startUpdates = startUpdates;
+        }
+    }
+
     /** Airoha SPP service UUID (UuidTable.AIROHA_SPP_UUID). */
     private static final UUID SPP_UUID =
             UUID.fromString("00000000-0000-0000-0099-AABBCCDDEEFF");
@@ -83,8 +98,12 @@ final class DirectAirohaController {
     private static final long LINK_WAIT_MS = 10_000L;
     /** A connect that never reports back is dropped after this long. */
     private static final long CONNECT_TIMEOUT_MS = 20_000L;
-    /** RACE response timeout; the stock 6 s blocks far too long for a tile. */
-    private static final int RACE_RESPONSE_TIMEOUT_MS = 1000;
+    /** RACE response timeout used by Audio Connect's AirohaMmiMgr. */
+    private static final int RACE_RESPONSE_TIMEOUT_MS = 6000;
+    /** TWS battery data is a second, asynchronous packet after the ACK. */
+    private static final int BATTERY_INDICATION_TIMEOUT_MS = 6000;
+    /** Give the RFCOMM reader a short window to settle before the first write. */
+    private static final long LINK_STABILIZE_MS = 100L;
     /** Bluetooth probe (binder) results are reused this long. */
     private static final long PRESENCE_TTL_MS = 15_000L;
 
@@ -140,6 +159,16 @@ final class DirectAirohaController {
         if (session != null) session.syncOnce();
     }
 
+    /** Force a user-requested read without changing the once-per-connection sync latch. */
+    static void refreshBattery(Context context, String address, BatteryRefreshCallback callback) {
+        Session session = session(context, address);
+        if (session == null) {
+            if (callback != null) callback.onComplete(null, false);
+            return;
+        }
+        session.refreshBattery(callback);
+    }
+
     /** Drop the link (and the socket) when the headset goes away. */
     static void disconnect(Context context, String address, String reason) {
         Session session = session(context, address);
@@ -157,9 +186,42 @@ final class DirectAirohaController {
     }
 
     /**
-     * Presence hint straight from the ACL broadcast: costs no binder call and
-     * is the only reliable signal on this build (the profile query throws).
+     * True when any headset audio profile is still connected. This uses the
+     * public profile state API, unlike {@code BluetoothAdapter.getConnectedDevices(int)},
+     * which this ROM does not expose. It only guards against treating our own
+     * SPP teardown as the headset leaving.
      */
+    static boolean audioProfileConnected(Context context) {
+        BluetoothAdapter adapter = null;
+        try {
+            if (context != null) {
+                BluetoothManager manager =
+                        (BluetoothManager) context.getSystemService(Context.BLUETOOTH_SERVICE);
+                if (manager != null) adapter = manager.getAdapter();
+            }
+            if (adapter == null) adapter = BluetoothAdapter.getDefaultAdapter();
+        } catch (Throwable t) {
+            Logs.trace("audio profile adapter failed: " + t);
+            return false;
+        }
+        if (adapter == null) return false;
+        int a2dp = profileState(adapter, BluetoothProfile.A2DP);
+        int headset = profileState(adapter, BluetoothProfile.HEADSET);
+        int leAudio = profileState(adapter, LE_AUDIO_PROFILE);
+        Logs.trace("audio profiles a2dp=" + a2dp + " hfp=" + headset + " le=" + leAudio);
+        return a2dp == BluetoothProfile.STATE_CONNECTED
+                || headset == BluetoothProfile.STATE_CONNECTED
+                || leAudio == BluetoothProfile.STATE_CONNECTED;
+    }
+
+    private static int profileState(BluetoothAdapter adapter, int profile) {
+        try {
+            return adapter.getProfileConnectionState(profile);
+        } catch (Throwable t) {
+            return BluetoothProfile.STATE_DISCONNECTED;
+        }
+    }
+
     static void setPresent(boolean present) {
         int value = present ? 1 : -1;
         aclPresent = value;
@@ -212,6 +274,8 @@ final class DirectAirohaController {
         /** Newest requested mode, -1 when nothing is pending. */
         private int wantedMode = -1;
         private boolean wantedQuery;
+        private boolean wantedBatteryRefresh;
+        private final List<PendingBatteryRefresh> pendingBatteryRefreshes = new ArrayList<>();
         private boolean workerStarted;
 
         private volatile int linkState = LINK_IDLE;
@@ -226,13 +290,20 @@ final class DirectAirohaController {
         private volatile boolean openerRunning;
         private volatile boolean openOk;
         private volatile Throwable openError;
-        private volatile boolean readerRunning;
 
         /** A frame the worker is waiting for: set by the reader, consumed once. */
         private volatile AirohaRace.Frame ack;
         private final Object ackLock = new Object();
-        /** Which frame that ack must belong to (race id), -1 = accept anything. */
+        /** Which race id the ACK must belong to; -1 means no active waiter. */
         private volatile int ackFor = -1;
+        /** Response type expected by the current ack waiter. */
+        private volatile int ackType = -1;
+        /** Battery indications have their own completion signal after the ACK. */
+        private final Object batteryLock = new Object();
+        private final long[] batteryRoleUpdates = new long[2];
+        /** Wire roles are agent/partner, not fixed left/right channels. */
+        private volatile boolean agentIsRight;
+        private volatile boolean agentChannelKnown;
         /** Bumped on every teardown; a late connect() must not commit a socket. */
         private volatile int attemptSeq;
 
@@ -259,6 +330,7 @@ final class DirectAirohaController {
         private volatile int aclSeen;
         /** A read-only sync already ran (or was claimed) for the current connection. */
         private volatile boolean synced;
+        private volatile long batteryUpdates;
 
         Session(Context context, String address) {
             this.context = context;
@@ -303,6 +375,17 @@ final class DirectAirohaController {
             }
         }
 
+        void refreshBattery(BatteryRefreshCallback callback) {
+            synchronized (lock) {
+                if (callback != null) {
+                    pendingBatteryRefreshes.add(new PendingBatteryRefresh(callback, batteryUpdates));
+                }
+                wantedBatteryRefresh = true;
+                startWorker();
+                lock.notifyAll();
+            }
+        }
+
         /** The base context is fine; upgrade to the Application once it exists. */
         private Context contextForCodeLoading() {
             Context current = context;
@@ -341,20 +424,33 @@ final class DirectAirohaController {
 
         void release(String reason) {
             Logs.trace("release " + key + " reason=" + reason);
+            List<PendingBatteryRefresh> cancelled;
             synchronized (lock) {
                 wantedMode = -1;
                 wantedQuery = false;
+                wantedBatteryRefresh = false;
+                cancelled = new ArrayList<>(pendingBatteryRefreshes);
+                pendingBatteryRefreshes.clear();
             }
             teardown();
+            completeBatteryRefreshes(cancelled);
         }
 
         /** Socket is useless: drop it. The worker exits until the next command. */
         private void teardown() {
             attemptSeq++;
             closeSocket();
-            linkDead = false;
+            linkDead = true;
+            clearAckWait();
+            synchronized (ackLock) {
+                ackLock.notifyAll();
+            }
+            synchronized (batteryLock) {
+                batteryLock.notifyAll();
+            }
             adaptiveOn = false;
             adaptiveKnown = false;
+            agentChannelKnown = false;
             linkState = LINK_IDLE;
             synchronized (linkLock) {
                 linkLock.notifyAll();
@@ -387,7 +483,7 @@ final class DirectAirohaController {
                     workerStarted = false;
                     // Nothing may be left un-consumed: if the loop died with a
                     // command pending, restart instead of dropping clicks.
-                    if (wantedMode >= 0 || wantedQuery) startWorker();
+                    if (wantedMode >= 0 || wantedQuery || wantedBatteryRefresh) startWorker();
                 }
             }
         }
@@ -415,8 +511,10 @@ final class DirectAirohaController {
 
                 int mode = -1;
                 boolean query = false;
+                boolean batteryRefresh = false;
+                List<PendingBatteryRefresh> refreshCallbacks = null;
                 synchronized (lock) {
-                    if (wantedMode < 0 && !wantedQuery) {
+                    if (wantedMode < 0 && !wantedQuery && !wantedBatteryRefresh) {
                         // Idle: leave. Object.wait() would wake this process
                         // every minute for no work. The next click or sync
                         // starts a new daemon.
@@ -430,38 +528,52 @@ final class DirectAirohaController {
                         query = wantedQuery;
                         wantedQuery = false;
                     }
+                    if (wantedBatteryRefresh) {
+                        batteryRefresh = true;
+                        wantedBatteryRefresh = false;
+                        refreshCallbacks = new ArrayList<>(pendingBatteryRefreshes);
+                        pendingBatteryRefreshes.clear();
+                    }
                 }
 
                 // One command = one short lived link: close whatever a former
                 // attempt left behind before deciding anything.
                 teardown();
 
-                if (mode >= 0) {
-                    // A click after an explicit disconnect is ignored on purpose:
-                    // the headset is on another device and must not be paged.
-                    if (connectionState() == PROBE_ABSENT) {
-                        pendingMode = -1;
-                        Logs.trace("click ignored, headset not connected");
+                try {
+                    int state = connectionState();
+                    if (mode >= 0 || batteryRefresh) {
+                        // A click after an explicit disconnect is ignored on purpose:
+                        // the headset is on another device and must not be paged.
+                        if (state == PROBE_ABSENT) {
+                            pendingMode = -1;
+                            Logs.trace(batteryRefresh
+                                    ? "battery refresh ignored, headset not connected"
+                                    : "click ignored, headset not connected");
+                            continue;
+                        }
+                    } else if (query && state != PROBE_CONNECTED) {
+                        // Background battery refresh only runs on a confirmed live link.
+                        Logs.trace("query skipped, headset not confirmed");
                         continue;
                     }
-                } else if (connectionState() != PROBE_CONNECTED) {
-                    // Battery refresh only runs on a confirmed live link.
-                    Logs.trace("query skipped, headset not confirmed");
-                    continue;
-                }
 
-                if (!ensureLink(mode >= 0)) {
-                    pendingMode = -1;
-                    continue;
-                }
+                    if (!ensureLink(mode >= 0 || batteryRefresh)) {
+                        pendingMode = -1;
+                        continue;
+                    }
 
-                try {
-                    if (mode >= 0) applyMode(mode);
-                    // A sync claimed alongside a click still has to run: the
-                    // click path does not ask for battery.
-                    if (query) queryState();
+                    try {
+                        if (mode >= 0) applyMode(mode);
+                        // A sync claimed alongside a click still has to run: the
+                        // click path does not ask for battery.
+                        if (query) queryState();
+                        else if (batteryRefresh) queryBattery();
+                    } finally {
+                        teardown();
+                    }
                 } finally {
-                    teardown();
+                    completeBatteryRefreshes(refreshCallbacks);
                 }
             }
         }
@@ -658,7 +770,15 @@ final class DirectAirohaController {
                             throw new IOException("attempt superseded");
                         }
                         socket = opened;
+                        linkDead = false;
                         startReader(opened);
+                        // Start reading before the first write.  Keep a small,
+                        // bounded settling window without inventing a protocol
+                        // handshake that Audio Connect never sends.
+                        sleep(LINK_STABILIZE_MS);
+                        if (seq != attemptSeq || opened != socket || linkDead) {
+                            throw new IOException("link ended before ready");
+                        }
                         synchronized (linkLock) {
                             openOk = true;
                             openerRunning = false;
@@ -713,25 +833,24 @@ final class DirectAirohaController {
         private void startReader(final BluetoothSocket current) {
             Thread reader = new Thread(new Runnable() {
                 @Override public void run() {
-                    readerRunning = true;
                     byte[] chunk = new byte[2000];
                     AirohaRace.Parser parser = new AirohaRace.Parser();
+                    AirohaRace.Sink sink = frame -> {
+                        if (current == socket) Session.this.onFrame(frame);
+                    };
                     try {
                         InputStream in = current.getInputStream();
-                        while (readerRunning && current == socket) {
+                        while (current == socket) {
                             int n = in.read(chunk);
                             // -1 is EOF. 0 should not happen for a positive
                             // buffer, but spinning on it would peg a core.
-                            if (n <= 0) break;
-                            if (Logs.DEBUG) {
-                                Logs.d("rx raw " + AirohaRace.hex(slice(chunk, n)));
-                            }
-                            parser.feed(chunk, 0, n, Session.this);
+                            if (n <= 0 || current != socket) break;
+                            Logs.trace("rx raw " + AirohaRace.hex(slice(chunk, n)));
+                            parser.feed(chunk, 0, n, sink);
                         }
                     } catch (Throwable t) {
                         Logs.trace("reader stopped: " + t);
                     } finally {
-                        readerRunning = false;
                         if (current == socket) {
                             // The socket died (the channel is shared by the two
                             // hooked processes): wake the worker and let it
@@ -739,6 +858,12 @@ final class DirectAirohaController {
                             needsReset = true;
                             linkDead = true;
                             markFailed("reader ended");
+                            synchronized (ackLock) {
+                                ackLock.notifyAll();
+                            }
+                            synchronized (batteryLock) {
+                                batteryLock.notifyAll();
+                            }
                             synchronized (lock) {
                                 lock.notifyAll();
                             }
@@ -765,6 +890,12 @@ final class DirectAirohaController {
                 Logs.trace("write failed: " + t);
                 needsReset = true;
                 linkDead = true;
+                synchronized (ackLock) {
+                    ackLock.notifyAll();
+                }
+                synchronized (batteryLock) {
+                    batteryLock.notifyAll();
+                }
                 synchronized (lock) {
                     lock.notifyAll();
                 }
@@ -775,8 +906,8 @@ final class DirectAirohaController {
         /**
          * Send one command and wait for its answer.  Every MMI command is type
          * 0x5A and is answered by type 0x5B carrying the same race id and a
-         * status byte; pana ids (below 0x200) are matched by id alone, exactly
-         * like {@code MmiStage.isExpectedResp}.
+         * status byte.  Indications update state but never complete this ACK
+         * wait; TWS battery explicitly waits for its indication afterwards.
          */
         private AirohaRace.Frame command(int raceId, byte[] payload) {
             AirohaRace.Frame frame = sendAndWait(raceId, payload);
@@ -788,28 +919,45 @@ final class DirectAirohaController {
         }
 
         private AirohaRace.Frame sendAndWait(int raceId, byte[] payload) {
+            final int seq = attemptSeq;
             synchronized (ackLock) {
                 ack = null;
                 ackFor = raceId;
+                ackType = AirohaRace.TYPE_RESP;
             }
-            if (!write(AirohaRace.command(raceId, payload))) return null;
+            if (!write(AirohaRace.command(raceId, payload))) {
+                clearAckWait();
+                return null;
+            }
             long deadline = SystemClock.elapsedRealtime() + RACE_RESPONSE_TIMEOUT_MS;
             synchronized (ackLock) {
                 // A dead socket reports itself through linkDead; the full
                 // timeout would only make a stale click slower to give up.
-                while (ack == null && !linkDead
+                while (ack == null && !linkDead && seq == attemptSeq
                         && SystemClock.elapsedRealtime() < deadline) {
                     try {
                         ackLock.wait(200L);
                     } catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
+                        ack = null;
+                        ackFor = -1;
+                        ackType = -1;
                         return null;
                     }
                 }
                 AirohaRace.Frame answer = ack;
                 ack = null;
                 ackFor = -1;
+                ackType = -1;
                 return answer;
+            }
+        }
+
+        private void clearAckWait() {
+            synchronized (ackLock) {
+                ack = null;
+                ackFor = -1;
+                ackType = -1;
             }
         }
 
@@ -830,21 +978,34 @@ final class DirectAirohaController {
             if (raceId == AirohaRace.RID_GET_OUTSIDE && type == AirohaRace.TYPE_IND
                     && frame.raw.length >= 10) {
                 onOutsideCtrl(frame.u8(7), frame.u8(8), frame.u8(9), true);
+            } else if (raceId == AirohaRace.RID_GET_AGENT && type == AirohaRace.TYPE_RESP
+                    && frame.status() == 0 && frame.raw.length >= 8
+                    && frame.u8(7) <= 1) {
+                agentIsRight = frame.u8(7) == 1;
+                agentChannelKnown = true;
+                Logs.trace("rx agent channel=" + (agentIsRight ? "right" : "left"));
             } else if (raceId == AirohaRace.RID_GET_BATTERY
                     && type == AirohaRace.TYPE_IND
                     && frame.raw.length >= 9 && frame.status() == 0) {
                 // Battery arrives as an indication (role, level) after the ack.
-                onBattery(frame.u8(7), frame.u8(8));
+                int role = frame.u8(7);
+                if (role <= 1 && agentChannelKnown) {
+                    int side = agentIsRight ? 1 - role : role;
+                    onBattery(side, frame.u8(8), role);
+                } else {
+                    Logs.trace("battery indication ignored: unknown role/channel role=" + role);
+                }
             } else if (raceId == AirohaRace.RID_GET_CRADLE && type == AirohaRace.TYPE_RESP
                     && frame.status() == 0 && frame.raw.length >= 8) {
-                onBattery(2, frame.u8(7));
+                onBattery(2, frame.u8(7), -1);
             }
 
-            // Wake the worker: only the response it is waiting for counts as an
-            // answer, so an unsolicited indication cannot be mistaken for one.
-            if (type == AirohaRace.TYPE_RESP || type == AirohaRace.TYPE_IND) {
+            // Wake the worker only for the response type it requested.  TWS
+            // battery is deliberately two-stage: its 0x5B ACK must not consume
+            // the later 0x5D (role, level) indication.
+            if (type == AirohaRace.TYPE_RESP) {
                 synchronized (ackLock) {
-                    if (ack == null && (ackFor < 0 || ackFor == raceId)) {
+                    if (ack == null && ackFor == raceId && ackType == type) {
                         ack = frame;
                         ackLock.notifyAll();
                     }
@@ -862,14 +1023,20 @@ final class DirectAirohaController {
                             : mode == CTRL_AMBIENT ? STATUS_AMBIENT : STATUS_OFF);
         }
 
-        private void onBattery(int side, int level) {
+        private void onBattery(int side, int level, int role) {
             if (side < 0 || side > 2) return;
             int[] values = BATTERY.get(key);
             if (values == null) values = new int[]{-1, -1, -1, 4, 4, 4};
+            else values = values.clone();
             values[side] = level <= 100 ? level : -1;
             if (values[side] < 0) values[side + 3] = 4;
             else if (values[side + 3] != 1) values[side + 3] = 4;
             BATTERY.put(key, values);
+            synchronized (batteryLock) {
+                batteryUpdates++;
+                if (role >= 0 && role < batteryRoleUpdates.length) batteryRoleUpdates[role]++;
+                batteryLock.notifyAll();
+            }
             Logs.trace("rx battery side=" + side + " level=" + level);
             Az100Hook.onAirohaBattery(address, values);
         }
@@ -917,12 +1084,81 @@ final class DirectAirohaController {
             // labels itself from; the three battery frames fill the settings
             // cache. Nothing here is repeated while the buds stay connected.
             AirohaRace.Frame outside = command(AirohaRace.RID_GET_OUTSIDE, null);
+            if (outside == null) return;
             if (outside != null && outside.status() == 0 && outside.raw.length >= 10) {
                 onOutsideCtrl(outside.u8(7), outside.u8(8), outside.u8(9), false);
             }
-            command(AirohaRace.RID_GET_BATTERY, new byte[]{0});
-            command(AirohaRace.RID_GET_BATTERY, new byte[]{1});
+            queryBattery();
+        }
+
+        private void queryBattery() {
+            if (needsReset || linkDead) return;
+            // Official OnBattery maps role 0/1 through the current agent's
+            // channel.  Refresh it on each short-lived link because the AZ100
+            // can change agent when an earbud is returned to the case.
+            AirohaRace.Frame channel = command(AirohaRace.RID_GET_AGENT, null);
+            if (channel == null) return;
+            if (!agentChannelKnown) {
+                Logs.trace("!! no valid agent channel status=" + channel.status());
+                return;
+            }
+            if (!queryTwsBattery(0) && (needsReset || linkDead)) return;
+            if (!queryTwsBattery(1) && (needsReset || linkDead)) return;
             command(AirohaRace.RID_GET_CRADLE, null);
+        }
+
+        /**
+         * TWS battery uses an ACK followed by a separate indication.  Waiting
+         * for only the ACK makes the worker close RFCOMM before the level is
+         * delivered.  The role counter also retains an indication received in
+         * the same RFCOMM read as the ACK, before the worker starts this wait.
+         */
+        private boolean queryTwsBattery(int role) {
+            final int seq = attemptSeq;
+            long startUpdates;
+            synchronized (batteryLock) {
+                startUpdates = batteryRoleUpdates[role];
+            }
+            AirohaRace.Frame answer = command(AirohaRace.RID_GET_BATTERY,
+                    new byte[]{(byte) role});
+            if (answer == null || answer.status() != 0) {
+                if (answer != null) {
+                    Logs.trace("battery ACK rejected role=" + role
+                            + " status=" + answer.status());
+                }
+                return false;
+            }
+
+            long deadline = SystemClock.elapsedRealtime() + BATTERY_INDICATION_TIMEOUT_MS;
+            synchronized (batteryLock) {
+                while (batteryRoleUpdates[role] <= startUpdates && !linkDead
+                        && seq == attemptSeq
+                        && SystemClock.elapsedRealtime() < deadline) {
+                    try {
+                        batteryLock.wait(200L);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return false;
+                    }
+                }
+                boolean received = batteryRoleUpdates[role] > startUpdates;
+                if (!received) Logs.trace("!! no battery indication role=" + role);
+                return received;
+            }
+        }
+
+        private void completeBatteryRefreshes(List<PendingBatteryRefresh> callbacks) {
+            if (callbacks == null || callbacks.isEmpty()) return;
+            long currentUpdates = batteryUpdates;
+            int[] values = cachedBattery(address);
+            for (PendingBatteryRefresh pending : callbacks) {
+                boolean fresh = currentUpdates > pending.startUpdates;
+                try {
+                    pending.callback.onComplete(fresh ? values : null, fresh);
+                } catch (Throwable t) {
+                    Logs.d("battery refresh callback failed: " + t);
+                }
+            }
         }
 
         /* ---------------- misc ---------------- */
