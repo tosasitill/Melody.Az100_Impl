@@ -126,6 +126,7 @@ public final class MelodyProviderHook {
         // The detail activity runs in Melody's :fg process and is independent
         // of the provider signatures used by SystemUI.
         MelodyDetailBatteryHook.install(loader);
+        LeAudioWhitelistHook.install(loader);
         try {
             Class<?> provider = XposedHelpers.findClass(PROVIDER, loader);
             XposedHelpers.findAndHookMethod(provider, "query",

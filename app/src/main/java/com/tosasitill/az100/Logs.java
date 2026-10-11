@@ -81,4 +81,9 @@ final class Logs {
         } catch (Throwable ignored) {
         }
     }
+
+    /** Same as {@link #trace(String)}, for a failure worth recording too. */
+    static void trace(String message, Throwable t) {
+        trace(message + " - " + t);
+    }
 }
