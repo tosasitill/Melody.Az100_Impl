@@ -1,156 +1,148 @@
-# Technics EAH-AZ100 音量面板适配
+# Technics EAH-AZ100 适配
 
-LSPosed 模块，只注入 `com.oplus.melody`。音量二级菜单的降噪磁贴由 SystemUI 通过
-`content://com.oplus.melody.provider.EarphoneControlProvider` 读取，模块在 Melody
-进程内应答 query/call，并用自带的 Airoha SPP/RACE 协议下发模式。SystemUI 和
-设备空间都不注入。
+LSPosed 模块，当前版本 **1.7.9**（versionCode 32）。它做两件分开的事：
 
-不加载、不反射 `com.panasonic.technicsaudioconnect`。Audio Connect 可以卸载。
+- 在 `com.oplus.melody` 里应答音量面板，并用自带的 Airoha SPP/RACE 读写降噪和电量。
+- 在 `com.android.bluetooth` 里让 AZ100 走 LE Audio（LC3），并让系统设置出现 LE Audio 开关。
 
-长按磁贴会进入 Melody 的 AZ100 耳机详情页。模块保留 Activity/工具栏，跳过不支持
-AZ100 的原生产品加载，提供连接状态、左右耳和充电盒电量，以及“立即刷新电量”按钮。
-刷新时先读取主耳方向，再等待电量请求的 ACK 和异步通知，收到数据后才关闭 SPP。
+SystemUI、设备空间和 `com.panasonic.technicsaudioconnect` 都不注入。Audio Connect 可以卸载。
 
 ## 构建
 
+仓库没有 Gradle Wrapper。本机用 JDK 21：
+
 ```bash
-gradle :app:assembleDebug
+export JAVA_HOME=/opt/homebrew/Cellar/openjdk@21/21.0.12.1/libexec/openjdk.jdk/Contents/Home
+gradle :app:assembleDebug -Dorg.gradle.java.home="$JAVA_HOME"
 ```
 
 输出：`app/build/outputs/apk/debug/app-debug.apk`。
 
+JDK 25/26 会在 `JdkImageTransform` 失败。
+
 ## LSPosed
 
 1. 安装并启用模块。
-2. 作用域只勾 `com.oplus.melody`。不要勾 `com.heytap.mydevices` 或
-   `com.android.systemui`。
-3. `adb shell am force-stop com.oplus.melody`。
+2. 作用域勾 `com.oplus.melody` 和 `com.android.bluetooth`。
+   不要勾 `com.heytap.mydevices` 或 `com.android.systemui`。
+3. 只改 Melody 行为时：`adb shell am force-stop com.oplus.melody`。
+4. 改了蓝牙钩子后，重启蓝牙进程才会加载新代码：
+
+```bash
+adb shell su -c 'svc bluetooth disable'
+adb shell su -c 'kill -9 $(pidof com.android.bluetooth)'
+adb shell su -c 'svc bluetooth enable'
+```
 
 日志：
 
 ```bash
 adb logcat -s AZ100:V
+adb shell su -c 'cat /data/misc/bluetooth/az100.log'
 ```
+
+蓝牙进程里的 `XposedBridge.log` 经常丢，以 `az100.log` 为准。
+
+## 音量面板和电量
+
+长按磁贴进入 Melody 的 AZ100 详情页。模块保留原生活动和工具栏，跳过 Melody 不认识 AZ100 的产品加载，显示连接状态、左右耳和充电盒电量，并提供“立即刷新电量”。刷新先读主耳方向，再等电量 ACK 和异步通知，收到后关闭 SPP。
+
+面板模式：`5` 降噪、`1` 关闭、`2` 通透。自适应不在轮换里；耳机如果正处在自适应，显示为降噪，下一次切换先清掉。
+
+耳机连上后最多读一次当前模式和电量。之后的 query 只回内存，不会因为 SystemUI 的媒体路由回调反复开 SPP。
+
+## LE Audio
+
+AZ100 有两只耳的地址，都要按同一副耳机处理：
+
+| 地址 | 角色 |
+| --- | --- |
+| `B8:20:8E:EE:84:85` | 主耳，classic profile 在这边 |
+| `B8:20:8E:EE:3C:62` | 另一只耳，LE Audio group 的另一名成员 |
+
+当前实机状态（OnePlus PLJ110 / ColorOS，2026-10-12）：
+
+- `0000184e` 进入 `mUuidsLe`，`le_audio: ALLOWED`
+- LE Audio 连接后 ASE 走到 LC3
+- `184E` 一到就调用官方 `connectLeAudio()`，不再先连 A2DP/LDAC 再被踢掉
+- 模块日志有 `dual-coexist: ... marked LEA-coexistent (directLeaConnect)`
+
+### 为什么官方路径不会自己连
+
+OPPO 自家耳机的直连入口是 `OplusDualModeManagerImpl.onRemoteUuidsUpdated()`。它只处理已经放进 `mPendingLeaConnectAfterDiscover` 的设备，而这个集合只在双连接偏好变化时填充。AZ100 不回答 OPPO 的 Echo/SmartAudio 握手，`/data/user_de/0/com.android.bluetooth/shared_prefs/dual_mode_support.xml` 是空的，所以官方 `connectLeAudio()` 在一次普通连接里不会被调用。
+
+`OplusDualModeCoexistHook` 做四件事：
+
+1. `isSupportDualConnection()` 和 `isDualConnectionNeeded()` 对 AZ100 回答 true。
+2. `184E` 到达后，按地址去重，主动调用 `OplusLeAudioPhonePolicyExt.connectLeAudio()`。因为第 1 条，它走到 `setConnectionPolicy(LE_AUDIO, 100)`，不是 `connect br profile first`。
+3. 把已经被写成 FORBIDDEN 的 A2DP/HFP 策略恢复成 ALLOWED，避免 LE Audio 没接上时完全没声音。
+4. LE Audio 连上后接管 active device，并挡住 classic profile 立刻抢回去。
+
+同一地址在上一次直连任务还没执行时不会重复排队。
+
+### 设置里的开关
+
+无线设置详情页的开关来自 `com.android.settings.bluetooth.BluetoothDetailsProfilesController`。`LeAudioProfile` 进 `mProfiles` 有两条路：
+
+- LE Audio 变成 `STATE_CONNECTED` 时，`CachedBluetoothDevice.onProfileStateChanged()` 无条件加入。
+- `updateProfiles()` 看到 `getUuids()` 含 `0000184e`。
+
+只补 UUID 不够。设置进程可能在连接之后才打开，那时 `getUuids()` 仍是 null；LE Audio 必须真正连上，详情页重进后开关才稳定出现。
+
+`LeAudioWhitelistHook` 只影响 Melody 自己的 BR/LE 视图。`com.android.settings` 不查 Melody 白名单，这个钩子和系统开关无关。
+
+### 厂商栈里的另外两道门
+
+- `libbluetooth_jni.so` 的 `oplus_btif_is_lea_device()` 对非 OPPO 产品返回 false，随后 `oplus_handle_filter_uuid()` 剥掉 `184E/184F/1846/1844`。`NativeLeaDeviceHook` 在蓝牙进程内把该函数改成 `mov w0, #1; ret`。序言不匹配时拒绝改写。当前固件偏移是 `0x643180`，系统升级后要重新核对。
+- `BassClientService.mOplusBassClientService` 在这版 ROM 上从未赋值。`184F` 放行后，`connect()` 会空指针并把整批 profile 连接打断。`BassClientFixHook` 补上实例；补不上时直接让这次 BASS 连接返回 false。
+
+`SPLICE_LE_AUDIO_UUIDS` 仍是设置开关的兜底：它在 `setUuidsLe()` 入参里补 `0000184e`。这个注入不依赖 `DIAGNOSE`。`DIAGNOSE` 只控制 UUID 流水线和音量的诊断日志。
 
 ## 代码
 
-| 文件 | 作用 |
-| --- | --- |
-| `Az100Hook` | 只在 `com.oplus.melody` 加载，转给 `MelodyProviderHook` |
-| `MelodyProviderHook` | 应答音量面板的 active/noise query 和点击 |
-| `MelodyDetailBatteryHook` | 在 Melody 耳机详情页提供手动电量刷新 |
-| `LeAudioWhitelistHook` | 让 Melody 把 AZ100 认成支持 BR/LE 切换（实测生效，但与系统设置那个开关无关，可关） |
-| `DirectAirohaController` | 按次打开 SPP，发完即关 |
-| `AirohaRace` | H4/RACE 分帧 |
+| 文件 | 进程 | 作用 |
+| --- | --- | --- |
+| `Az100Hook` | 入口 | Melody 走音量面板；蓝牙进程走 LE Audio |
+| `MelodyProviderHook` | Melody | 应答音量面板 query 和点击 |
+| `MelodyDetailBatteryHook` | Melody | 详情页手动刷新电量 |
+| `DirectAirohaController` | Melody | 按次打开 SPP，发完即关 |
+| `AirohaRace` | Melody | H4/RACE 分帧 |
+| `LeAudioWhitelistHook` | Melody | Melody 内部 BR/LE 视图，不影响系统开关 |
+| `LeAudioTransportHook` | 蓝牙 | LE 配对、UUID 注入、音量下限和双耳补连 |
+| `NativeLeaDeviceHook` | 蓝牙 | 打开 native LE Audio 门，停止剥离 UUID |
+| `BassClientFixHook` | 蓝牙 | 修补 BASS 空指针 |
+| `OplusDualModeCoexistHook` | 蓝牙 | 直连 LE Audio，并阻止 classic 抢回 active |
 
-面板模式：`5` 降噪、`1` 关闭、`2` 通透。自适应不出现在轮换里，耳机若处于自适应，
-显示为降噪，下一次切换会先清掉。
+`NativeLeaWhitelistHook` 保留但未安装。它写的是地址键，native 门实际按厂商/产品 ID 查，两者对不上。
 
-耳机连上后最多读一次当前模式和电量。音量面板之后的 query 只回内存里的模式，
-不会因为 SystemUI 的媒体路由回调反复建立 SPP。
-
-## LE Audio / LC3
-
-> **✅ 15:15 收官（已打通）**：AZ100 现在**真的跑在 LE Audio 上**，不再是「只让 UI
-> 出现开关」。模块 `LeAudioTransportHook`（v1.5.1 / versionCode 10，
-> `SPLICE_LE_AUDIO_UUIDS = true`）改 `RemoteDevices$DeviceProperties#setUuidsLe`
-> 的实参，把 `0000184e` 补进 `mUuidsLe`（仅对目标地址）。实测：
-> `[LE UUIDs]: 0000180f-… 0000184e-…`、`le_audio: ALLOWED`、
-> `LeAudioStateMachine state=Connected`、`currentlyActiveGroupId: 1`、
-> ASE 走到 `STREAMING (0x04)`（`CODEC_CONFIG: snk,6,3;;` = LC3）。
-> 完整证据链见报告 §12。
-
-**结论（真机实测，2026-10-11 定案）：设置里没有这个开关，跟白名单无关。
-唯一决定点是 `BluetoothDevice.getUuids()` 里有没有 LE Audio 服务 UUID `0000184e`，
-没有的话 Settings 连开关控件都不会创建。**
-
-拿不到 `0000184e` 有两个前后相继的原因，**两个都已解决**：
-
-1. ~~耳机在 Classic Audio 模式，根本不广播 `0000184e`~~ → **已解决**（13:20 起在广播了）。
-2. ~~**手机不建立 LE 链路**：`createBond()` 用 `transport=0`(AUTO)，AZ100 的 LE 广播
-   没有置 `BR/EDR Not Supported` 标志位（`NOT_BR_EDR support bit not set, treat device as DUMO`），
-   于是走 BR/EDR 配对 + OPPO 的 `oplus_delay_ble_smp_over_br`(CTKD) 派生 LE 密钥。~~
-   → **已解决**：强制 LE 配对（`FORCE_LE_TRANSPORT`）拿到 LE bond。
-
-   但注意：LE 链路建起来之后 `mUuidsLe` 里**仍然只有 `0000180f`** —— 厂商栈在
-   `oplus_btm_ble_process_adv_pkt_cont` 里以 `removal of lea uuids` 把 LEA UUID
-   剥掉了（设备不在它的 `isLEAudioDeviceInWhiteList` 里）。**这才是最后一环**，
-   所以必须显式补 UUID，仅靠「让手机走 LE」不够。
-
-唯一决定点（`LocalBluetoothProfileManager#updateProfiles`，第 493 行）：
-
-```java
-if (ArrayUtils.contains(parcelUuidArr, BluetoothUuid.LE_AUDIO) && (leAudioProfile = this.mLeAudioProfile) != null) {
-    collection.add(leAudioProfile);      // ← 只有这里会把 LeAudioProfile 塞进设备
-}
-```
-
-`parcelUuidArr` = `device.getUuids()`，它等于 `mUuidsBrEdr ∪ mUuidsLe`（**不含 LE 广播里的 UUID**，
-`RemoteDevices$DeviceProperties#getUuids()`，`RemoteDevices.java:498`）。AZ100 的
-`[BR/EDR UUIDs]` 里没有 `0000184e`，`[LE UUIDs]` 整行不存在 → 没有它 → `LeAudioProfile`
-不进 `mProfiles` → `getUiAccessibleProfiles()` 里没有它 → `BluetoothDetailsProfilesController`
-不创建这个 preference。
-
-协议栈侧是同一个条件，且只是四道门里的第一道：
-
-```java
-Util.arrayContains(uuids, BluetoothUuid.LE_AUDIO)                 // (A) 挂了
-  && leAudioService.getConnectionPolicy(device) != 0
-  && (mLeAudioEnabledByDefault || Utils.isDualModeAudioEnabled())  // 已满足
-  && (bypass || hapDefault || isLeAudioAllowed(device) || ...)     // 已满足（bypass=true）
-```
-
-**OPPO 自己的 LE Audio 策略整类也是同一个前提** —— 反编译
-`/system_ext/framework/oplus_bluetooth_common_ext.jar` 里的
-`com.oplus.bluetooth.leaudio.OplusLeAudioPhonePolicyExt`：
-
-```java
-private void initLeAudioPriority(boolean autoConnectProfilesSupported,
-                                 BluetoothDevice device, ParcelUuid[] uuids) {
-    if (mAdapterService != null && getLeAudioService() != null
-        && containsUuid(uuids, BluetoothUuid.LE_AUDIO)     // ★ 每个分支都有这道守卫
-        && leAudioService.getConnectionPolicy(device) == -1) {
-        setProfilePolicy(device, 22, autoConnectProfilesSupported ? 100 : 0);
-    }
-}
-```
-
-所以 `com.flyfish233.coloros.leaudiofx`（v0.6.6，hook 的正是 `initLeAudioPriority`）
-在当前状态下**必然空转** —— 它改得了策略值，改不出 `LeAudioProfile`、更建不出 LE ACL。
-
-> 顺带纠正：`persist.bluetooth.*` 属性属于 `bluetooth_prop`，**`adb shell` 无权读**，
-> `getprop` 会静默返回空。读蓝牙属性一律用 `adb shell su -c "getprop ..."`。
-
-完整证据链、每条属性的实际值、LSPosed 模块注入日志、OPPO 策略源码与下一步路线见
-**[`2026-10-11_leaudio-whitelist-report.md`](2026-10-11_leaudio-whitelist-report.md)**。
-
-代价（如果最终真切到 LE Audio）：失去 LDAC、多点连接降到 1 台、Spatial Audio / 语音助手关闭。
-**如果目标是音质，LE Audio 是负优化**；它的价值在低延迟 / Auracast / 助听器互通。
-
-`LeAudioWhitelistHook` 实测全部生效（`Melody_FeatureOptions: ... sLeaWhiteListEnable = true,
-sBrLeCoExist = true`），但它**与系统设置那个开关无关**（Settings 从不查 Melody 白名单），
-建议用文件里的 `ENABLED` 常量关掉。
-
-耳机固件侧的开关是另一条链路，走 Airoha `RaceIdPana` 89/90，由 macOS 侧工具操作。
-它很可能就是「切 LE Audio 模式」的同一个开关（切完会断链重连）：
+## 验证
 
 ```bash
-./az100.sh leaudio          # 读
-./az100.sh leaudio on       # 写
+adb shell su -c 'grep -E "directLeaConnect|native: patch rc|bass-npe" /data/misc/bluetooth/az100.log'
+adb shell su -c 'dumpsys bluetooth_manager | grep -A3 "84:85"'
 ```
 
-## macOS 侧工具
+期望：
 
-`macos/` 下有一套同协议的命令行工具和菜单栏 App，方便在 Mac 上直接切换降噪模式、
-看电量（用 `IOBluetooth` 走 RFCOMM，协议实现从 `AirohaRace` 移植）。
+- `native: patch rc=0`
+- `bass-npe: injected OplusBassClientService`
+- 两个 AZ100 地址都有 `directLeaConnect`
+- `[LE UUIDs]` 含 `0000184e`
+- LE Audio 连接后 `[ACL ... LE:Y]`
+
+`persist.bluetooth.*` 属于 `bluetooth_prop`。`adb shell getprop` 可能返回空，读的时候用 `adb shell su -c "getprop ..."`。
+
+## macOS
+
+`macos/` 用同一套 RACE 帧在 Mac 上切换降噪、读电量和读写耳机固件的 LE Audio 开关。它改的是耳机，不改手机里的系统设置。
 
 ```bash
 cd macos
-./az100.sh                      # 看模式 + 电量
-./az100.sh anc                  # 切降噪（还有 通透 / 关闭 / 自适应 / toggle）
-./az100.sh leaudio on           # 开耳机固件侧的 LE Audio（LC3）
-./az100-menubar.sh              # 构建并安装菜单栏 App 到 ~/Applications
-./az100-menubar.sh login        # 设为登录自启
+./az100.sh
+./az100.sh leaudio          # 读固件侧开关
+./az100-menubar.sh
 ```
 
-菜单栏 App 在耳机连上这台 Mac 时自动出现、断开时自动消失。细节见 `macos/README.md`。
+细节见 `macos/README.md`。协议字节见 `docs-audio-connect.md`。
+
+`2026-10-11_*.md` 和 `2026-10-12_*.md` 是当天的排查记录，里面的“下一步”和“当前状态”以本文件为准。

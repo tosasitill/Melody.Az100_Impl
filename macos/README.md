@@ -51,10 +51,10 @@ $ ./az100.sh -j leaudio
 LE_AUDIO=1
 ```
 
-**注意这会改耳机固件侧的状态**，与手机端 Melody / 系统设置里的 LE Audio 开关是
-两条独立链路：这边改耳机，那边改手机 UI 是否放行（详见仓库根目录
-`2026-10-11_leaudio-whitelist-report.md`）。切换时耳机会断开重连一次，
-所以脚本在 `-j` 之外会提示「等耳机重连后复核」。
+这改的是耳机固件。手机侧是否走 LE Audio、系统设置里有没有开关，由 LSPosed 模块在
+`com.android.bluetooth` 里决定，见仓库根目录的 `README.md`。官方只有开和关，没有
+单独的 LE-only 模式；写 `1` 不保证 classic A2DP/HFP 消失。切换时耳机会断开重连一次，
+脚本在 `-j` 之外会提示等重连后复核。
 
 固定设备（多副耳机时）：
 

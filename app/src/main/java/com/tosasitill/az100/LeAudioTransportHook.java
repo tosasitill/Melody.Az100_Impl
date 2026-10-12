@@ -628,7 +628,7 @@ final class LeAudioTransportHook {
         // the bypass below is judged to have worked.
         hookPairingRequest();
         if (BYPASS_CONSENT) hookConsentBypass();
-        if (DIAGNOSE) hookUuidPipeline();
+        if (SPLICE_LE_AUDIO_UUIDS || DIAGNOSE) hookUuidPipeline();
         if (DIAGNOSE) hookVolumeControl();
         if (SUPPRESS_REDUNDANT_VCS_WRITES) hookVolumeWriteGuard();
         if (TWIN_AUTO_CONNECT) hookLeAudioTwin();
@@ -1004,23 +1004,26 @@ final class LeAudioTransportHook {
             Logs.trace("routeB: DeviceProperties not found", t);
         }
         if (properties != null) {
-            for (final String setter : new String[]{
-                    "setUuidsBrEdr",
-                    "setUuidsLe",
-                    "setUuidsFromExtendedInquiryResponse",
-                    "setUuidsFromLeAdvertisingData"}) {
-                try {
-                    XposedBridge.hookAllMethods(properties, setter, new XC_MethodHook() {
-                        @Override protected void afterHookedMethod(MethodHookParam param) {
-                            dumpUuids(param.thisObject, setter);
-                        }
-                    });
-                } catch (Throwable t) {
-                    Logs.trace("routeB: cannot hook " + setter, t);
+            if (DIAGNOSE) {
+                for (final String setter : new String[]{
+                        "setUuidsBrEdr",
+                        "setUuidsLe",
+                        "setUuidsFromExtendedInquiryResponse",
+                        "setUuidsFromLeAdvertisingData"}) {
+                    try {
+                        XposedBridge.hookAllMethods(properties, setter, new XC_MethodHook() {
+                            @Override protected void afterHookedMethod(MethodHookParam param) {
+                                dumpUuids(param.thisObject, setter);
+                            }
+                        });
+                    } catch (Throwable t) {
+                        Logs.trace("routeB: cannot hook " + setter, t);
+                    }
                 }
             }
             if (SPLICE_LE_AUDIO_UUIDS) spliceLeAudioUuid(properties);
         }
+        if (!DIAGNOSE) return;
 
         try {
             Class<?> adapterService = XposedHelpers.findClass(ADAPTER_SERVICE, loader);

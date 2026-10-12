@@ -1,5 +1,7 @@
 # AZ100 LE Audio / LC3 修复 — v1.5.9 技术总结
 
+> 这是 v1.5.9 当天的工作记录。当前版本是 1.7.9，运行行为以 `README.md` 为准。
+
 > 设备：OnePlus PLJ110（ColorOS / Android 16，构建 `PLJ110_17.0.0.101(CN01)`）
 > 耳机：Technics EAH-AZ100，两个 LE 身份 `B8:20:8E:EE:84:85`（左，DUAL）与 `B8:20:8E:EE:3C:62`（右，LE only），同属 CSIS group 1
 > 模块：route B 在 `com.android.bluetooth` 内运行（原 `com.oplus.melody` 规则的唯一例外，已用户授权）

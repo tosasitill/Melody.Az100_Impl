@@ -323,6 +323,18 @@ final class OplusDualModeCoexistHook {
     private static final ThreadLocal<Boolean> IN_FIX = new ThreadLocal<Boolean>();
 
     /**
+     * One handler for the life of the process.  {@code onRemoteUuidsUpdated()}
+     * fires on a binder thread and can fire twice for the same earbud within a
+     * single discovery, so the follow-up connect is posted here and collapsed
+     * per address by {@link #LEA_CONNECT_PENDING}.
+     */
+    private static final android.os.Handler MAIN =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+
+    /** Addresses that already have a {@link #connectLeaNow} waiting to run. */
+    private static final Set<String> LEA_CONNECT_PENDING = ConcurrentHashMap.newKeySet();
+
+    /**
      * Set while {@code LeAudioService.removeActiveDevice()} is on the stack.
      *
      * <p>That method is the <em>API</em> teardown -- {@code setActiveDevice(null)}
@@ -529,13 +541,15 @@ final class OplusDualModeCoexistHook {
                             if (!(param.args[0] instanceof BluetoothDevice)) return;
                             final BluetoothDevice device = (BluetoothDevice) param.args[0];
                             if (!isAz100(device)) return;
+                            final String address = device.getAddress();
+                            if (address == null || !LEA_CONNECT_PENDING.add(address)) return;
                             final Object self = param.thisObject;
-                            new android.os.Handler(android.os.Looper.getMainLooper()).post(
-                                    new Runnable() {
-                                        @Override public void run() {
-                                            connectLeaNow(impl, self, device);
-                                        }
-                                    });
+                            MAIN.post(new Runnable() {
+                                @Override public void run() {
+                                    LEA_CONNECT_PENDING.remove(address);
+                                    connectLeaNow(impl, self, device);
+                                }
+                            });
                         }
                     });
             Logs.trace("dual-coexist: direct LEA connect armed");
