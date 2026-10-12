@@ -319,8 +319,72 @@ final class LeAudioTransportHook {
      *
      * <p>It just never gets to look for the second member, because the Java
      * layer in front of it is missing the UUID that would let it start.
+     *
+     * <h2>Status: live again (2026-10-12)</h2>
+     *
+     * <p>This splice was the first working route, but it fights the vendor
+     * filter head-on.  Splicing {@code 184E} is exactly what makes
+     * {@code isLeAudioDevice()} return true, and that is the condition which
+     * arms {@code OplusLeAudioRemoteDevice}'s strip in the first place -- so
+     * every spliced UUID gets deleted again a moment later, and the module has
+     * to keep re-injecting on every property change.  That re-entry was the
+     * main source of the crashes this module has been fighting.
+     *
+     * <p>It was briefly retried via the native route
+     * ({@link NativeLeaDeviceHook} forcing
+     * {@code oplus_btif_is_lea_device()} true in-process), but on the shipping
+     * ROM that alone does not put {@code 0000184E} where Settings looks, and the
+     * switch vanished.  The splice is therefore back on as the primary route;
+     * the native patch stays as a second layer so the vendor filter stops
+     * stripping where it applies.
      */
     private static final boolean SPLICE_LE_AUDIO_UUIDS = true;
+
+    /**
+     * Register the AZ100 into OPPO's native {@code OplusLeAudioWhiteList}
+     * interop list.
+     *
+     * <h2>Status: retired (2026-10-12)</h2>
+     *
+     * <p>This wrote the <b>address key</b>, and it did work: on device the entry
+     * lands in the interop database, persists to
+     * {@code /data/misc/bluedroid/bt_iot_update_list.conf}, and
+     * {@code interop_oplus_match_addr("OplusLeAudioWhiteList", addr)} returns
+     * true for both AZ100 addresses.
+     *
+     * <p>It was not enough.  {@code oplus_btif_is_lea_device()} -- the gate the
+     * native LEA paths <i>and</i> the UUID filter actually consult -- never
+     * looks at addresses.  It asks
+     * {@code interop_match_vendor_and_3bytes_product_id()} against a hard-coded
+     * {@code .rodata} table of OPPO's own product ids, and no JNI entry point
+     * can add a vendor/product pair to it.  An address entry cannot reach that
+     * lookup, so {@code is_oplus_lea} stayed false and the UUIDs stayed
+     * stripped.
+     *
+     * <p>{@link NativeLeaDeviceHook} replaces this by opening the gate itself,
+     * in-process.  Kept for reference and A/B; see
+     * {@code 2026-10-12_native-oppo-leaudio-masquerade-report.md} §7.
+     */
+    private static final boolean NATIVE_LEA_WHITELIST = false;
+
+    /**
+     * Repair OPPO's dead {@code BassClientService.mOplusBassClientService}
+     * field, which is never assigned on this ROM and is dereferenced without a
+     * null check in three places -- {@code connect()} being the one that killed
+     * the whole profile-connect batch once {@link NativeLeaDeviceHook} let
+     * {@code 184F} (BASS) through.  See {@link BassClientFixHook}.
+     */
+    private static final boolean BASS_NPE_FIX = true;
+
+    /**
+     * Stop OPPO's dual-mode policy from forbidding A2DP/HFP once
+     * {@link NativeLeaDeviceHook} has let {@code 0000184E} through.  The AZ100
+     * fails OPPO's proprietary Echo coexistence handshake, so the vendor code
+     * classifies it as "not lea coexistence device" and zeroes both classic
+     * profiles -- leaving the headset with no usable link at all.  See
+     * {@link OplusDualModeCoexistHook}.
+     */
+    private static final boolean OPLUS_DUAL_MODE_COEXIST_FIX = true;
 
     /**
      * Drop VCS writes that would not change the headset's volume.  A no-op
@@ -554,6 +618,10 @@ final class LeAudioTransportHook {
         // and createBond/sendUuidsInternal both run on one.  Mirroring to a file
         // the Bluetooth process owns is the only channel that always works.
         Logs.traceToFile(new File("/data/misc/bluetooth"));
+        if (NATIVE_LEA_WHITELIST) NativeLeaWhitelistHook.install(classLoader);
+        NativeLeaDeviceHook.install(classLoader);
+        if (BASS_NPE_FIX) BassClientFixHook.install(classLoader);
+        if (OPLUS_DUAL_MODE_COEXIST_FIX) OplusDualModeCoexistHook.install(classLoader);
         hookBondEntryPoints();
         // Installed even with AUTO_CONFIRM off: this is the only place that
         // records whether the consent dialog was raised at all, which is how

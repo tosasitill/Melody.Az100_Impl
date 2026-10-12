@@ -10,8 +10,8 @@ android {
         applicationId 'com.tosasitill.az100'
         minSdk 29
         targetSdk 35
-        versionCode 18
-        versionName '1.5.9'
+        versionCode 32
+        versionName '1.7.9'
     }
 
     compileOptions {
