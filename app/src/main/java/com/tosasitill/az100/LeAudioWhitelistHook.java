@@ -113,6 +113,28 @@ final class LeAudioWhitelistHook {
     private static volatile boolean installed;
     private static volatile ClassLoader loader;
 
+    /**
+     * One synthesised entry per key, reused instead of rebuilt.
+     *
+     * <p>Measured 2026-10-13: on a single connect, Melody resolves the same mac
+     * 59 times in six seconds (and the same name 8 times), and every miss used
+     * to allocate a fresh {@code WhitelistConfigDTO} plus a
+     * {@code WhitelistConfigDTO$Function} through reflection and append a line
+     * to the external-storage trace.  The entry is immutable from the caller's
+     * side -- Melody only reads {@code function.brLeCoExist} -- so one instance
+     * per key is enough.
+     *
+     * <p>Keyed by name or mac, so the two resolvers share the cache.  Unbounded
+     * growth is not a concern here: the keys are the headset's two addresses and
+     * one product name.
+     */
+    private static final java.util.Map<String, Object> ENTRIES =
+            new java.util.concurrent.ConcurrentHashMap<String, Object>();
+
+    /** One trace line per key, so the cache hit path stays silent. */
+    private static final java.util.Set<String> REPORTED =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     private LeAudioWhitelistHook() {
     }
 
@@ -143,9 +165,7 @@ final class LeAudioWhitelistHook {
                             String productId = (String) param.args[1];
                             String name = (String) param.args[2];
                             if (!isAz100Name(name)) return;
-                            param.setResult(entry(productId, name));
-                            Logs.trace("le whitelist: synthesized by name=" + name
-                                    + " pid=" + productId);
+                            param.setResult(entryCached("n:" + name, productId, name));
                         }
                     });
             // b(BluetoothDevice device, Collection<WhitelistConfigDTO> all)
@@ -158,15 +178,41 @@ final class LeAudioWhitelistHook {
                             String address = device.getAddress();
                             if (!Az100Hook.isAz100Mac(address)) return;
                             String name = device.getName();
-                            param.setResult(entry(null,
+                            param.setResult(entryCached("m:" + address, null,
                                     name == null || name.isEmpty() ? Az100Hook.AZ100_NAME : name));
-                            Logs.trace("le whitelist: synthesized by mac=" + mask(address));
                         }
                     });
             Logs.trace("le whitelist: resolvers hooked");
         } catch (Throwable t) {
             Logs.e("le whitelist: resolver hook failed", t);
         }
+    }
+
+    /**
+     * The synthetic entry for {@code key}, built once.
+     *
+     * <p>Two threads can race here; both may build an entry, and the one that
+     * loses the {@code putIfAbsent} is discarded.  That is harmless -- the
+     * objects are equal in every field Melody reads -- and it keeps the hot
+     * path free of a lock.
+     */
+    private static Object entryCached(String key, String productId, String name) {
+        Object cached = ENTRIES.get(key);
+        if (cached != null) return cached;
+        Object built = entry(productId, name);
+        Object previous = ENTRIES.putIfAbsent(key, built);
+        Object result = previous == null ? built : previous;
+        if (REPORTED.add(key)) {
+            Logs.trace("le whitelist: synthesized " + maskKey(key) + " (cached for later hits)");
+        }
+        return result;
+    }
+
+    /** Redact the address inside a cache key ({@code m:MAC} / {@code n:NAME}). */
+    private static String maskKey(String key) {
+        if (key == null) return "?";
+        if (key.startsWith("m:")) return "m:" + mask(key.substring(2));
+        return key;
     }
 
     /**
