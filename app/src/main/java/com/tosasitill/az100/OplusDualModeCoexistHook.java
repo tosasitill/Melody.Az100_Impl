@@ -222,6 +222,8 @@ final class OplusDualModeCoexistHook {
             "com.android.bluetooth.le_audio.LeAudioService";
     private static final String A2DP_SERVICE =
             "com.android.bluetooth.a2dp.A2dpService";
+    private static final String ADAPTER_SERVICE =
+            "com.android.bluetooth.btservice.AdapterService";
     private static final String CONNECTABLE_PROFILE =
             "com.android.bluetooth.profile.ConnectableProfile";
     private static final String HEADSET_SERVICE =
@@ -592,6 +594,9 @@ final class OplusDualModeCoexistHook {
     private OplusDualModeCoexistHook() {
     }
 
+    /** Guarded so a repeated {@code install()} cannot stack duplicate hooks. */
+    private static boolean nullGuardHooked;
+
     static void install(ClassLoader classLoader) {
         if (!ENABLED) return;
         loader = classLoader;
@@ -625,6 +630,12 @@ final class OplusDualModeCoexistHook {
                 hookGroupAvailableForStream(classLoader);
                 hookA2dpActiveGuard(classLoader);
                 hookLeaConnectedUnstick(classLoader);
+            }
+            // Not behind LE_AUDIO_TAKES_OVER: this one protects the process from
+            // a ROM crash that has nothing to do with which audio path won.
+            if (!nullGuardHooked) {
+                nullGuardHooked = true;
+                hookNullDeviceProfileQuery(classLoader);
             }
         }
     }
@@ -2359,6 +2370,73 @@ final class OplusDualModeCoexistHook {
             return name != null && name.contains("EAH-AZ100");
         } catch (Throwable ignored) {
             return false;
+        }
+    }
+
+    /**
+     * Stops the ROM from crashing the whole Bluetooth process on a null device.
+     *
+     * <h2>Measured failure (2026-10-13)</h2>
+     *
+     * <p>145 crash reports in {@code /data/system/dropbox}, 86 of them through
+     * this path, all the same {@code NullPointerException}:
+     *
+     * <pre>
+     * java.lang.NullPointerException: Attempt to invoke virtual method
+     *     'java.lang.Class java.lang.Object.getClass()' on a null object reference
+     *   at ConnectableProfile$Companion.isSupported
+     *   at AdapterService.isProfileSupported
+     *   at AdapterService.isAllSupportedClassicAudioProfilesActive
+     *   at OplusActiveDeviceManagerExtImpl.oplusHandleHfpActiveDeviceChanged:1547
+     *   at ActiveDeviceManager.handleHfpActiveDeviceChanged
+     * </pre>
+     *
+     * <p>{@code ActiveDeviceManager.handleHfpActiveDeviceChanged(device)} passes
+     * {@code device} straight to the vendor extension <em>before</em> its own
+     * null checks, and a HFP deactivation carries {@code null} by definition --
+     * that is exactly what {@code HeadsetService.removeActiveDevice()} produces,
+     * which this module calls as part of the LE Audio hand-over.  The vendor
+     * extension then asks {@code isAllSupportedClassicAudioProfilesActive(null)},
+     * which calls {@code isProfileSupported(null, ...)}, and the decompiled body
+     * of {@code ConnectableProfile.Companion.isSupported()} opens with
+     * {@code p8.getClass(); p9.getClass();} -- no null check anywhere on the way
+     * down.
+     *
+     * <p>The other three paths reach the same missing check from the vendor's
+     * own callbacks:
+     *
+     * <pre>
+     * ActiveDeviceManager.handleA2dpActiveDeviceChanged   (32 crashes)
+     * BassClientService.connect                           (17 crashes)
+     * PhonePolicy.processProfileStateChanged              ( 7 crashes)
+     * </pre>
+     *
+     * <p>Answering {@code false} is what the method already returns for a device
+     * with no profile support, and it is the answer that keeps the caller on its
+     * existing path: {@code isAllSupportedClassicAudioProfilesActive()} treats
+     * {@code false} as "classic profiles are not all up", which for a null
+     * device is true in every sense.  A non-null device is untouched.
+     *
+     * <p>This is deliberately <em>not</em> conditioned on the address being an
+     * AZ100: the ROM crashes on any {@code null} here, for any device, and a
+     * process death takes every other connection down with it.  Nothing about
+     * the fix is earbud-specific.
+     */
+    private static void hookNullDeviceProfileQuery(ClassLoader cl) {
+        try {
+            Class<?> adapterService = XposedHelpers.findClass(ADAPTER_SERVICE, cl);
+            XposedHelpers.findAndHookMethod(adapterService, "isProfileSupported",
+                    BluetoothDevice.class, int.class, new XC_MethodHook() {
+                        @Override protected void beforeHookedMethod(MethodHookParam param) {
+                            if (param.args[0] != null) return;
+                            param.setResult(Boolean.FALSE);
+                            noteOnce("nullDeviceProfileQuery");
+                        }
+                    });
+            Logs.trace("dual-coexist: isProfileSupported null guard installed");
+        } catch (Throwable t) {
+            Logs.e("dual-coexist: isProfileSupported null guard failed", t);
+            Logs.trace("dual-coexist: isProfileSupported null guard FAILED - " + t);
         }
     }
 
