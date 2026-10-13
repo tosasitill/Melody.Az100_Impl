@@ -51,6 +51,32 @@ adb shell su -c 'cat /data/misc/bluetooth/az100.log'
 
 耳机连上后最多读一次当前模式和电量。之后的 query 只回内存，不会因为 SystemUI 的媒体路由回调反复开 SPP。
 
+## 设置
+
+模块有四个开关，两个入口读同一份配置：
+
+- LSPosed 模块列表里的 **AZ100** 应用（`MainActivity`）
+- 上面那个详情页里的「模块设置」区
+
+| 开关 | 默认 | 作用 |
+| --- | --- | --- |
+| 自动切换到 LE Audio | 开 | 关掉后 `connectLeaNow()` 直接返回，不再把重连升级成 LEA |
+| 自动连接另一只耳塞 | 开 | 一只连上后把同组另一只也连上 |
+| 音量修复 | 开 | 抬高低音量下限，并丢弃重复的绝对音量写入 |
+| 详细日志 | 关 | 对应原来的 `DIAGNOSE` 常量，只影响日志 |
+
+「自动切换到 LE Audio」是下面那个问题的出口：用系统详情页的 LE Audio 开关关掉 LEA 后，ROM 会把音频回退到 LDAC，而 `onRemoteUuidsUpdated` 随后触发 `hookDirectLeaConnect`，把设备又升级回 LEA。关掉这个开关即可停止该行为，系统自带的 LE Audio 开关仍然有效。
+
+配置存在 LSPosed 重定向后的位置，权限 `0664`：
+
+```
+/data/misc/apexdata/<uuid>/prefs/com.tosasitill.az100/az100.xml
+```
+
+不是模块自己的 data 目录 —— 那里没有 `shared_prefs`，这是实测结果。蓝牙进程用 `XSharedPreferences` 直接读文件（它不能 bind 到模块，钩子必须在模块没运行时也能工作）；Melody 进程用不了文件（不同 UID，目录 `0700`），走 `Az100ConfigProvider.call()` 由模块代写。写入用 `commit()`，因为调用方是另一个进程，`apply()` 的异步落盘会让「已保存」撒谎。
+
+改动在下次连接时生效，不需要重启蓝牙或重启手机。
+
 ## LE Audio
 
 AZ100 有两只耳的地址，都要按同一副耳机处理：
@@ -96,7 +122,7 @@ OPPO 自家耳机的直连入口是 `OplusDualModeManagerImpl.onRemoteUuidsUpdat
 - `libbluetooth_jni.so` 的 `oplus_btif_is_lea_device()` 对非 OPPO 产品返回 false，随后 `oplus_handle_filter_uuid()` 剥掉 `184E/184F/1846/1844`。`NativeLeaDeviceHook` 在蓝牙进程内把该函数改成 `mov w0, #1; ret`。序言不匹配时拒绝改写。当前固件偏移是 `0x643180`，系统升级后要重新核对。
 - `BassClientService.mOplusBassClientService` 在这版 ROM 上从未赋值。`184F` 放行后，`connect()` 会空指针并把整批 profile 连接打断。`BassClientFixHook` 补上实例；补不上时直接让这次 BASS 连接返回 false。
 
-`SPLICE_LE_AUDIO_UUIDS` 仍是设置开关的兜底：它在 `setUuidsLe()` 入参里补 `0000184e`。这个注入不依赖 `DIAGNOSE`。`DIAGNOSE` 只控制日志：UUID 流水线、音量诊断，以及 `LeAudioTransportHook` 里的 `setDeviceVolume` 记录。音量修复本身（`allowVcp`、连接策略放行、音量上报捕获、成员生命周期）是无条件安装的，关掉 `DIAGNOSE` 不会让它失效。
+`SPLICE_LE_AUDIO_UUIDS` 仍是设置开关的兜底：它在 `setUuidsLe()` 入参里补 `0000184e`。这个注入不依赖「详细日志」。后者只控制日志：UUID 流水线、音量诊断，以及 `LeAudioTransportHook` 里的 `setDeviceVolume` 记录。音量修复本身（`allowVcp`、连接策略放行、音量上报捕获、成员生命周期）是无条件安装的，关掉「详细日志」不会让它失效。
 
 ## 代码
 
