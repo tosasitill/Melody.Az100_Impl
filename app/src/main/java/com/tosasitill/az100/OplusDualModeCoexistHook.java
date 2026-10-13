@@ -228,26 +228,191 @@ final class OplusDualModeCoexistHook {
             "com.android.bluetooth.hfp.HeadsetService";
 
     /**
-     * The real outgoing-connect funnel inside {@code A2dpService}.
+     * {@code A2dpService.connect(BluetoothDevice)} -- the public method, not a
+     * javac lambda name.
      *
-     * <p>{@code A2dpService} has no {@code connect(BluetoothDevice)} of its own
-     * -- {@code A2dpServiceBinder.connect()} calls this synthetic method, which
-     * is where the state machine is finally told to connect:
+     * <h2>Measured failure of the previous choice (2026-10-13)</h2>
+     *
+     * <p>This used to be {@code "lambda$retriggerContactDownload$0"}, on the
+     * assumption recorded here that javac lambda names are "stable across builds
+     * of the same source".  On the shipping ROM that assumption is false.  The
+     * method does not exist on {@code A2dpService} at all, and the first real
+     * disconnect after LE Audio had taken over produced:
      *
      * <pre>
-     *   // A2dpServiceBinder.connect()
-     *   return serviceAndEnforceConnect.lambda$retriggerContactDownload$0(bluetoothDevice);
-     *
-     *   // A2dpService.lambda$retriggerContactDownload$0()
-     *   if (!okToConnect(bluetoothDevice)) return false;
-     *   ...
-     *   orCreateStateMachine.sendMessage(1);        // CONNECT
+     * 12:25:26.417 dual-coexist: groupSwitch.apiRequest
+     * 12:25:26.841 dual-coexist: A2DP reconnect failed -
+     *              java.lang.NoSuchMethodError: com.android.bluetooth.a2dp.A2dpService
+     *              #lambda$retriggerContactDownload$0[class android.bluetooth.BluetoothDevice]
      * </pre>
      *
-     * <p>The name is javac's own lambda name, not an obfuscation -- it is stable
-     * across builds of the same source, so it is safe to hook/call by name.
+     * <p>and {@code A2dpStateMachine} stayed at
+     * {@code mConnectionState: STATE_DISCONNECTED, mLastConnectionState: STATE_DISCONNECTING}
+     * with {@code getConnectionPolicy: 100} -- i.e. allowed, but nothing ever
+     * asked it to connect.  LDAC did not come back until the headset was
+     * reconnected by hand.
+     *
+     * <p>{@code connect(BluetoothDevice)} is declared public on this exact
+     * build (verified by decompiling {@code /system/app/Bluetooth/Bluetooth.apk}):
+     *
+     * <pre>
+     *   public boolean connect(BluetoothDevice device) {
+     *       if (okToConnect(device)) { ... getOrCreateStateMachine(device).sendMessage(1); }
+     *   }
+     * </pre>
+     *
+     * <p>It is the same funnel {@code A2dpServiceBinder.connect()} reaches, and
+     * the {@code okToConnect} it calls is the very method
+     * {@link #hookA2dpActiveGuard} already hooks -- so the two stay consistent.
      */
-    private static final String A2DP_CONNECT = "lambda$retriggerContactDownload$0";
+    private static final String A2DP_CONNECT = "connect";
+
+    /**
+     * The address whose A2DP this class is holding down for {@code device}.
+     *
+     * <p>An LE Audio group is keyed by whichever identity the stack used to
+     * activate it, and for this headset that is the <em>LE-only</em> earbud:
+     *
+     * <pre>
+     *   XX:XX:XX:XX:84:85   [ DUAL ]  A2DP Sink, HFP AG, LE Audio -- the identity
+     *                                  A2dpService and HeadsetService know
+     *   XX:XX:XX:XX:3C:62   [  LE  ]  no classic profiles at all
+     * </pre>
+     *
+     * <p>{@code LeAudioService} activates the group on {@code 3C:62}, so that is
+     * what {@link #scheduleExclusiveEnter} records -- and therefore what the
+     * release used to hand to {@code A2dpService.connect()}.  That call cannot
+     * succeed: {@code connect()} refuses a device whose remote UUIDs lack
+     * {@code A2DP_SINK}, which is every LE-only identity.  Decompiled from
+     * {@code Bluetooth.apk} on this build:
+     *
+     * <pre>
+     *   public boolean connect(BluetoothDevice device) {
+     *       if (okToConnect(device)) {
+     *           if (Util.arrayContains(getAdapterService().getRemoteUuids(device),
+     *                                  BluetoothUuid.A2DP_SINK)) { ... return true; }
+     *           Log.e(TAG, "Cannot connect to " + device
+     *                   + " : Remote does not have A2DP Sink UUID");
+     *           return false;
+     *       }
+     *   }
+     * </pre>
+     *
+     * <p>Measured 2026-10-13: {@code leaExclusiveOff@...3C:62} followed by
+     * {@code A2DP reconnect requested, started=false} and
+     * {@code mConnectionState: STATE_DISCONNECTED}, LDAC never coming back.
+     *
+     * <p>So resolve to the bonded twin that actually owns A2DP before asking for
+     * a reconnect.  The result is cached per LE address because the lookup walks
+     * the bonded list and asks the stack for remote UUIDs.
+     *
+     * @return the device to reconnect, or {@code null} when no bonded identity of
+     *         this earbud advertises A2DP Sink (a genuinely LE-only headset).
+     */
+    private static BluetoothDevice a2dpPeerOf(BluetoothDevice device) {
+        if (device == null) return null;
+        String address = device.getAddress();
+        if (address == null) return null;
+        String cached = A2DP_PEER.get(address);
+        if (cached != null) return lookupBonded(cached);
+
+        BluetoothDevice peer = device;
+        try {
+            if (!advertisesA2dpSink(device)) {
+                peer = null;
+                for (BluetoothDevice bonded : bondedDevices()) {
+                    if (bonded == null || bonded.equals(device)) continue;
+                    // Same earbud, other identity: the stack reports both under one
+                    // name, and this is the only link between the two addresses --
+                    // there is no public identity-address API on this build.
+                    if (!sameName(device, bonded)) continue;
+                    if (!advertisesA2dpSink(bonded)) continue;
+                    peer = bonded;
+                    break;
+                }
+            }
+        } catch (Throwable t) {
+            Logs.trace("dual-coexist: A2DP peer lookup failed - " + t);
+            return null;
+        }
+        // Only the positive result is cached.  A miss is usually just "SDP has
+        // not landed yet" -- the LE Audio activation can beat the classic
+        // connection -- and caching that would pin the wrong answer for the life
+        // of the process.  The lookup only runs on a group transition, so paying
+        // for it again is cheap.
+        if (peer != null && peer != device) {
+            A2DP_PEER.put(address, peer.getAddress());
+            Logs.trace("dual-coexist: A2DP peer of " + mask(address) + " is "
+                    + mask(peer.getAddress()));
+        }
+        return peer;
+    }
+
+    /** Does this bonded device advertise the A2DP Sink profile? */
+    private static boolean advertisesA2dpSink(BluetoothDevice device) {
+        ParcelUuid[] uuids = device.getUuids();
+        if (uuids == null) return false;
+        for (ParcelUuid uuid : uuids) {
+            if (uuid != null && A2DP_SINK_UUID.equals(uuid.toString())) return true;
+        }
+        return false;
+    }
+
+    private static boolean sameName(BluetoothDevice a, BluetoothDevice b) {
+        try {
+            String name = a.getName();
+            return name != null && name.equals(b.getName());
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private static BluetoothDevice lookupBonded(String address) {
+        for (BluetoothDevice bonded : bondedDevices()) {
+            if (bonded != null && address.equalsIgnoreCase(bonded.getAddress())) return bonded;
+        }
+        return null;
+    }
+
+    /**
+     * The bonded device set, read through the live {@code AdapterService}.
+     *
+     * <p>{@code AdapterService.getBondedDevices()} is public on this build and
+     * returns the {@code AdapterProperties} set directly.  Going through the
+     * service rather than {@code BluetoothAdapter.getDefaultAdapter()} keeps this
+     * on the same in-process object graph as every other hook here, so it cannot
+     * be affected by an adapter that is mid-restart.
+     */
+    private static Iterable<BluetoothDevice> bondedDevices() {
+        Object lea = leaServiceRef;
+        if (lea == null) return java.util.Collections.emptyList();
+        try {
+            Object adapter = XposedHelpers.callMethod(lea, "getAdapterService");
+            if (adapter == null) return java.util.Collections.emptyList();
+            Object bonded = XposedHelpers.callMethod(adapter, "getBondedDevices");
+            if (bonded instanceof Iterable) {
+                @SuppressWarnings("unchecked")
+                Iterable<BluetoothDevice> devices = (Iterable<BluetoothDevice>) bonded;
+                return devices;
+            }
+        } catch (Throwable ignored) {
+        }
+        return java.util.Collections.emptyList();
+    }
+
+    /**
+     * The A2DP Sink profile UUID.
+     */
+    private static final String A2DP_SINK_UUID = "0000110b-0000-1000-8000-00805f9b34fb";
+
+    /**
+     * LE address -&gt; address of the bonded twin that owns A2DP.
+     *
+     * <p>Positive results only; a miss is re-resolved each time (see
+     * {@link #a2dpPeerOf}).  Bounded by the bonded device count, and cleared with
+     * the rest of the class's state on process restart.
+     */
+    private static final Map<String, String> A2DP_PEER = new ConcurrentHashMap<>();
 
     /**
      * How long to let an LE Audio activation settle before touching A2DP.
@@ -381,6 +546,29 @@ final class OplusDualModeCoexistHook {
      * lives and dies with the Bluetooth process.
      */
     private static final Map<String, BluetoothDevice> EXCLUSIVE = new ConcurrentHashMap<>();
+
+    /**
+     * Addresses whose A2DP reconnect this class has just issued.
+     *
+     * <p>{@link #classicMustStayDown} is consulted from inside
+     * {@code A2dpService.connect()} -- the very call {@link #doExclusiveExit}
+     * makes to bring classic audio back -- through
+     * {@link #hookA2dpActiveGuard}'s {@code okToConnect} hook.  Without this
+     * marker the release would veto itself:
+     *
+     * <pre>
+     * dual-coexist: groupSwitch.apiRequest
+     * dual-coexist: a2dpConnectRefused            &lt;- our own request, refused
+     * dual-coexist: leaExclusiveOff@...
+     * dual-coexist: A2DP reconnect requested, started=false
+     * </pre>
+     *
+     * <p>measured 2026-10-13, with {@code A2dpStateMachine} left at
+     * {@code STATE_DISCONNECTED}.  The marker is per address and removed as soon
+     * as the connect call returns, so a user-initiated activation is still
+     * refused for as long as LE Audio owns the path.
+     */
+    private static final Set<String> RELEASING = ConcurrentHashMap.newKeySet();
 
     /** Set while {@link #doExclusiveExit} is queued, so callers cannot stack. */
     private static volatile boolean exitScheduled;
@@ -1579,15 +1767,45 @@ final class OplusDualModeCoexistHook {
      * holds the path and a classic profile should hold it too.
      */
     private static boolean classicMustStayDown(BluetoothDevice device) {
+        if (isReleasing(device)) return false;
         if (isExclusive(device)) return true;
         Object lea = leaServiceRef;
         return lea != null && leaGroupHasAz100OnService(lea);
     }
 
+    /**
+     * True while this class is itself asking A2DP to come back for the device.
+     * See {@link #RELEASING} -- without this the release refuses itself.
+     */
+    private static boolean isReleasing(BluetoothDevice device) {
+        if (device == null) return false;
+        String address = device.getAddress();
+        return address != null && RELEASING.contains(address);
+    }
+
+    /**
+     * Is this device currently held down by an LE Audio exclusive session?
+     *
+     * <p>Both identities of the earbud have to be recognised.  The group is keyed
+     * by the LE-only address ({@code 3C:62}), but {@code okToConnect} and
+     * {@code setActiveDevice} are reached with the classic one ({@code 84:85}) --
+     * so a plain {@code EXCLUSIVE.containsKey(address)} never matched, and this
+     * signal was silently dead.  Only
+     * {@link #leaGroupHasAz100OnService} was actually holding A2DP down.
+     *
+     * <p>The reverse lookup is bounded by {@code EXCLUSIVE}'s size (one or two
+     * entries) and costs a map read per entry, which is fine for a hook that runs
+     * on every connect attempt.
+     */
     private static boolean isExclusive(BluetoothDevice device) {
         if (device == null) return false;
         String address = device.getAddress();
-        return address != null && EXCLUSIVE.containsKey(address);
+        if (address == null) return false;
+        if (EXCLUSIVE.containsKey(address)) return true;
+        for (String le : EXCLUSIVE.keySet()) {
+            if (address.equalsIgnoreCase(A2DP_PEER.get(le))) return true;
+        }
+        return false;
     }
 
     /**
@@ -1757,13 +1975,25 @@ final class OplusDualModeCoexistHook {
                 noteOnce("leaExclusiveNoA2dp@" + address);
                 return;
             }
-            try {
-                XposedHelpers.callMethod(a2dp, "disconnect", device);
+            // A2DP is keyed by the earbud's classic identity, which for this
+            // headset is not the address the LE Audio group used -- see
+            // a2dpPeerOf().  disconnect() looks the device up in its own state
+            // machine table and silently logs "no state machine" for an LE-only
+            // address, so the enter path needs the same resolution as the exit.
+            BluetoothDevice classic = a2dpPeerOf(device);
+            if (classic != null) {
+                try {
+                    XposedHelpers.callMethod(a2dp, "disconnect", classic);
+                    noteOnce("leaExclusiveOn@" + address);
+                } catch (Throwable t) {
+                    EXCLUSIVE.remove(address);
+                    Logs.trace("dual-coexist: A2DP disconnect failed - " + t);
+                    return;
+                }
+            } else {
+                // Nothing classic to take down; the LE Audio path is still the
+                // right one, so keep the entry and let the guards stand.
                 noteOnce("leaExclusiveOn@" + address);
-            } catch (Throwable t) {
-                EXCLUSIVE.remove(address);
-                Logs.trace("dual-coexist: A2DP disconnect failed - " + t);
-                return;
             }
             // HFP holds the active slot just as readily as A2DP did, and unlike
             // A2DP it is set from inside HeadsetService rather than through
@@ -1930,14 +2160,68 @@ final class OplusDualModeCoexistHook {
                 noteOnce("leaExclusiveHeld@" + entry.getKey());
                 continue;
             }
-            EXCLUSIVE.remove(entry.getKey());
+            // A2DP lives on the earbud's classic identity, not necessarily on the
+            // one the LE Audio group was keyed by -- see a2dpPeerOf().  Asking
+            // connect() for an LE-only address always fails.
+            BluetoothDevice target = a2dpPeerOf(device);
+            if (target == null) {
+                EXCLUSIVE.remove(entry.getKey());
+                noteOnce("leaExclusiveNoA2dpPeer@" + entry.getKey());
+                continue;
+            }
+            // Mark the release before the call: connect() re-enters
+            // classicMustStayDown() through the okToConnect hook, and without
+            // this the request would be refused by our own guard.  The entry
+            // itself is removed only after the request has gone in, so a failed
+            // call does not silently clear the bookkeeping -- measured
+            // 2026-10-13, see A2DP_CONNECT and RELEASING.
+            RELEASING.add(target.getAddress());
             try {
-                XposedHelpers.callMethod(a2dp, A2DP_CONNECT, device);
+                Object started = XposedHelpers.callMethod(a2dp, A2DP_CONNECT, target);
+                EXCLUSIVE.remove(entry.getKey());
                 noteOnce("leaExclusiveOff@" + entry.getKey());
+                Logs.trace("dual-coexist: A2DP reconnect requested for "
+                        + mask(target.getAddress()) + ", started=" + started);
+                if (Boolean.FALSE.equals(started)) {
+                    // Accepted by the guard but the state machine declined (no
+                    // A2DP Sink UUID, max devices, ...).  Nothing more to do.
+                    noteOnce("a2dpReconnectDeclined@" + entry.getKey());
+                }
             } catch (Throwable t) {
-                Logs.trace("dual-coexist: A2DP reconnect failed - " + t);
+                // Still never leave the entry behind -- a stuck entry blocks A2DP
+                // for the rest of the process's life, which is the failure this
+                // whole class exists to avoid.  Release it and retry once instead.
+                EXCLUSIVE.remove(entry.getKey());
+                Logs.e("dual-coexist: A2DP reconnect failed", t);
+                noteOnce("a2dpReconnectFailed@" + entry.getKey());
+                retryA2dpConnect(a2dp, target, entry.getKey());
+            } finally {
+                RELEASING.remove(target.getAddress());
             }
         }
+    }
+
+    /**
+     * One bounded second attempt at bringing A2DP back, after the first one
+     * threw.  Never a loop: the entry is already released by the caller, so a
+     * second failure only leaves classic audio down until the next connect --
+     * it cannot pin A2DP off the way a retained {@link #EXCLUSIVE} entry would.
+     */
+    private static void retryA2dpConnect(final Object a2dp,
+                                         final BluetoothDevice device,
+                                         final String key) {
+        DEFERRED.schedule(() -> {
+            RELEASING.add(key);
+            try {
+                Object started = XposedHelpers.callMethod(a2dp, A2DP_CONNECT, device);
+                Logs.trace("dual-coexist: A2DP reconnect retry started=" + started);
+                noteOnce("a2dpReconnectRetried@" + key);
+            } catch (Throwable t) {
+                Logs.e("dual-coexist: A2DP reconnect retry failed", t);
+            } finally {
+                RELEASING.remove(key);
+            }
+        }, HFP_REASSERT_MS, TimeUnit.MILLISECONDS);
     }
 
     /** The live {@code A2dpService}, via the LE Audio service's own adapter. */
@@ -2079,7 +2363,7 @@ final class OplusDualModeCoexistHook {
     private static void note(BluetoothDevice device, String reason) {
         String address = device.getAddress();
         if (address != null && REPORTED.add(reason + '@' + address)) {
-            Logs.trace("dual-coexist: " + address + " marked LEA-coexistent (" + reason + ")");
+            Logs.trace("dual-coexist: " + mask(address) + " marked LEA-coexistent (" + reason + ")");
         }
     }
 
@@ -2088,5 +2372,14 @@ final class OplusDualModeCoexistHook {
         if (REPORTED.add(reason)) {
             Logs.trace("dual-coexist: " + reason);
         }
+    }
+
+    /**
+     * Never log a full address: the module's own traces stay redacted.  See
+     * {@code AGENTS.md} -- Bluetooth addresses are device-specific data.
+     */
+    private static String mask(String address) {
+        if (address == null || address.length() < 5) return "?";
+        return "**:**:**" + address.substring(address.length() - 5);
     }
 }
