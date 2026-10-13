@@ -25,6 +25,9 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  */
 public final class Az100Hook implements IXposedHookLoadPackage {
 
+    /** This module's own package, used by {@link Prefs} to find its prefs file. */
+    static final String MODULE_PACKAGE = "com.tosasitill.az100";
+
     private static final String MELODY = "com.oplus.melody";
     private static final String BLUETOOTH = "com.android.bluetooth";
 

@@ -131,8 +131,16 @@ final class LeAudioTransportHook {
     /** Route B itself: rewrite the bond transport to LE for the AZ100. */
     private static final boolean FORCE_LE_TRANSPORT = true;
 
-    /** Log the whole UUID pipeline, so the outcome is measurable either way. */
-    private static final boolean DIAGNOSE = true;
+    /**
+     * Log the whole UUID pipeline, so the outcome is measurable either way.
+     *
+     * <p>Read from the settings page rather than fixed here -- see
+     * {@link Prefs#diagnose()}.  Only logging is behind it; every behaviour
+     * hook is installed unconditionally.
+     */
+    private static boolean diagnose() {
+        return Prefs.diagnose();
+    }
 
     /**
      * Answer the LE "Just Works" consent from inside the Bluetooth process.
@@ -393,7 +401,9 @@ final class LeAudioTransportHook {
      * everything queued behind it is stuck forever -- see
      * {@link #hookVolumeWriteGuard()}.
      */
-    private static final boolean SUPPRESS_REDUNDANT_VCS_WRITES = true;
+    private static boolean suppressRedundantVcsWrites() {
+        return Prefs.volumeFix();
+    }
 
     /**
      * {@code VolumeControlNativeInterface} raises any VCS value of 1..15 up to
@@ -403,7 +413,9 @@ final class LeAudioTransportHook {
      * means mute -- the stock code already passes 0 through untouched, which is
      * exactly the "one step above silence" the clamp otherwise eats.
      */
-    private static final boolean LOWER_VOLUME_FLOOR = true;
+    private static boolean lowerVolumeFloor() {
+        return Prefs.volumeFix();
+    }
 
     /**
      * The stack only ever dials one member of the AZ100 set, so after every
@@ -411,7 +423,9 @@ final class LeAudioTransportHook {
      * {@code LeAudioService#connect} on the sibling works, both stay connected,
      * and the group ends up with {@code Sink= left} and {@code Sink= right}.
      */
-    private static final boolean TWIN_AUTO_CONNECT = true;
+    private static boolean twinAutoConnect() {
+        return Prefs.twin();
+    }
 
     static final int TRANSPORT_AUTO = 0;
     static final int TRANSPORT_BREDR = 1;
@@ -646,7 +660,7 @@ final class LeAudioTransportHook {
         // the bypass below is judged to have worked.
         hookPairingRequest();
         if (BYPASS_CONSENT) hookConsentBypass();
-        if (SPLICE_LE_AUDIO_UUIDS || DIAGNOSE) hookUuidPipeline();
+        if (SPLICE_LE_AUDIO_UUIDS || diagnose()) hookUuidPipeline();
         // Behaviour first, diagnostics second -- and never behind DIAGNOSE.
         //
         // Measured 2026-10-13: hookVolumeControl() used to be called only when
@@ -659,9 +673,9 @@ final class LeAudioTransportHook {
         // operation queue waits for a Volume State notification that never
         // comes, and every operation queued behind it is stuck.
         hookVolumeBehavior();
-        if (DIAGNOSE) hookVolumeDiagnostics();
-        if (SUPPRESS_REDUNDANT_VCS_WRITES) hookVolumeWriteGuard();
-        if (TWIN_AUTO_CONNECT) hookLeAudioTwin();
+        if (diagnose()) hookVolumeDiagnostics();
+        if (suppressRedundantVcsWrites()) hookVolumeWriteGuard();
+        if (twinAutoConnect()) hookLeAudioTwin();
         if (CONSOLE) startConsole();
     }
 
@@ -1034,7 +1048,7 @@ final class LeAudioTransportHook {
             Logs.trace("routeB: DeviceProperties not found", t);
         }
         if (properties != null) {
-            if (DIAGNOSE) {
+            if (diagnose()) {
                 for (final String setter : new String[]{
                         "setUuidsBrEdr",
                         "setUuidsLe",
@@ -1053,7 +1067,7 @@ final class LeAudioTransportHook {
             }
             if (SPLICE_LE_AUDIO_UUIDS) spliceLeAudioUuid(properties);
         }
-        if (!DIAGNOSE) return;
+        if (!diagnose()) return;
 
         try {
             Class<?> adapterService = XposedHelpers.findClass(ADAPTER_SERVICE, loader);
@@ -1216,7 +1230,7 @@ final class LeAudioTransportHook {
                                     || !(args[2] instanceof Integer)) return;
                             captureVolumeReport(args[0], (Integer) args[1],
                                     (Integer) args[2], Boolean.TRUE.equals(args[5]));
-                            if (LOWER_VOLUME_FLOOR && preserveLowAutonomousReport(
+                            if (lowerVolumeFloor() && preserveLowAutonomousReport(
                                     param.thisObject, args)) param.setResult(null);
                         }
                     });
@@ -1324,7 +1338,7 @@ final class LeAudioTransportHook {
                 int stock = clampLeAudioVolume(wanted);
                 // 1..15 would be raised to 16 by the method body itself, so
                 // those have to go straight to native to survive.
-                int volume = (LOWER_VOLUME_FLOOR && wanted > 0
+                int volume = (lowerVolumeFloor() && wanted > 0
                         && wanted < LEAUDIO_VOLUME_MIN) ? wanted : stock;
                 Integer last = knownVolume(key);
                 if (isNoOp(key, volume)) {
