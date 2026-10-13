@@ -5,7 +5,6 @@ import android.util.Log;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
-
 import de.robv.android.xposed.XposedBridge;
 
 /**
@@ -34,6 +33,16 @@ final class Logs {
 
     private static volatile File traceFile;
     private static volatile boolean traceOpened;
+    private static FileOutputStream traceStream;
+
+    /**
+     * Cap the trace file.  Measured 2026-10-13: 0.70 MB/day while the headset is
+     * connected, and the file had reached 173 KB in one process lifetime without
+     * ever being trimmed.  A cap keeps a long-lived Bluetooth process from
+     * growing it without bound; the old content is kept as {@code .1} so the
+     * previous session stays readable.
+     */
+    private static final long TRACE_MAX_BYTES = 2L * 1024 * 1024;
 
     /**
      * Mirror the trace into a file the module can always write and {@code adb
@@ -43,7 +52,12 @@ final class Logs {
      */
     static void traceToFile(File directory) {
         if (directory == null) return;
-        traceFile = new File(directory, "az100.log");
+        synchronized (Logs.class) {
+            traceFile = new File(directory, "az100.log");
+            // A different target file invalidates the open stream.
+            closeQuietly();
+            traceOpened = false;
+        }
     }
 
     private Logs() {
@@ -71,13 +85,56 @@ final class Logs {
         Log.i(TRACE_TAG, message);
         File file = traceFile;
         if (file == null) return;
+        String line = System.currentTimeMillis() + " " + message + '\n';
+        // One synchronized block for open/append/rotate.  The old version read
+        // traceOpened and then opened the file, so two threads arriving together
+        // could both see "not opened yet" and both open with append=false -- the
+        // second open truncated whatever the first had just written.  That is how
+        // the process-startup lines went missing from az100.log.
+        synchronized (Logs.class) {
+            try {
+                if (traceStream == null) {
+                    traceStream = new FileOutputStream(file, traceOpened);
+                    traceOpened = true;
+                }
+                traceStream.write(line.getBytes(StandardCharsets.UTF_8));
+                traceStream.flush();
+                if (traceStream.getChannel().size() > TRACE_MAX_BYTES) rotate(file);
+            } catch (Throwable t) {
+                // A failed write must not break the caller: drop the stream so the
+                // next call reopens it.
+                closeQuietly();
+            }
+        }
+    }
+
+    /** Move the current trace aside and start a fresh one. */
+    private static void rotate(File file) {
+        closeQuietly();
+        File previous = new File(file.getParentFile(), file.getName() + ".1");
+        if (!file.renameTo(previous)) {
+            // Rename refused (usually because the target exists): truncate in
+            // place rather than growing forever.
+            try {
+                traceStream = new FileOutputStream(file, false);
+            } catch (Throwable ignored) {
+                traceStream = null;
+            }
+            return;
+        }
         try {
-            boolean append = traceOpened;
-            if (!append) traceOpened = true;
-            FileOutputStream out = new FileOutputStream(file, append);
-            String line = System.currentTimeMillis() + " " + message + '\n';
-            out.write(line.getBytes(StandardCharsets.UTF_8));
-            out.close();
+            traceStream = new FileOutputStream(file, false);
+        } catch (Throwable ignored) {
+            traceStream = null;
+        }
+    }
+
+    private static void closeQuietly() {
+        FileOutputStream stream = traceStream;
+        traceStream = null;
+        if (stream == null) return;
+        try {
+            stream.close();
         } catch (Throwable ignored) {
         }
     }

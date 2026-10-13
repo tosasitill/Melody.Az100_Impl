@@ -258,6 +258,15 @@ final class DirectAirohaController {
         return status == STATUS_ANC || status == STATUS_AMBIENT ? status : STATUS_OFF;
     }
 
+    /**
+     * Never log a full address: the module's own traces stay redacted.  See
+     * {@code AGENTS.md} -- Bluetooth addresses are device-specific data.
+     */
+    private static String mask(String address) {
+        if (address == null || address.length() < 5) return "?";
+        return "**:**:**" + address.substring(address.length() - 5);
+    }
+
     /* ------------------------------------------------------------------ */
     /* session                                                             */
     /* ------------------------------------------------------------------ */
@@ -423,7 +432,7 @@ final class DirectAirohaController {
         }
 
         void release(String reason) {
-            Logs.trace("release " + key + " reason=" + reason);
+            Logs.trace("release " + mask(key) + " reason=" + reason);
             List<PendingBatteryRefresh> cancelled;
             synchronized (lock) {
                 wantedMode = -1;
@@ -631,7 +640,7 @@ final class DirectAirohaController {
             synchronized (linkLock) {
                 linkLock.notifyAll();
             }
-            Logs.i("airoha link ready for " + key);
+            Logs.i("airoha link ready for " + mask(key));
         }
 
         private void markFailed(String reason) {
@@ -662,32 +671,36 @@ final class DirectAirohaController {
             probeError = null;
             boolean answered = false;
             boolean found = false;
-            // BluetoothAdapter first: on this build the BluetoothManager
-            // wrapper rejects the audio profiles with "Profile not supported",
-            // which must not be read as "device absent".
-            BluetoothAdapter adapter = null;
+            // The manager route first: BluetoothManager#getConnectedDevices(int)
+            // is public API on this build and returns the actual devices, which
+            // is the only way to confirm the connection belongs to THIS headset
+            // rather than to some other headset of the user's.
+            BluetoothManager manager = null;
             try {
-                adapter = BluetoothAdapter.getDefaultAdapter();
+                manager = (BluetoothManager) base.getSystemService(Context.BLUETOOTH_SERVICE);
             } catch (Throwable t) {
-                probeError = "adapter: " + t;
+                probeError = "manager: " + t;
             }
-            if (adapter != null) {
+            if (manager != null) {
                 for (int profile : PROBE_PROFILES) {
-                    int state = probe(adapter, profile);
+                    int state = probe(manager, profile);
                     if (state >= 0) answered = true;
                     if (state > 0) found = true;
                 }
             }
-            BluetoothManager manager = null;
+            // Fall back to the adapter's profile state only if the manager gave
+            // no answer at all.  That call cannot name the device, so it is a
+            // weaker signal and must not be the first choice.
             if (!answered) {
+                BluetoothAdapter adapter = null;
                 try {
-                    manager = (BluetoothManager) base.getSystemService(Context.BLUETOOTH_SERVICE);
+                    adapter = BluetoothAdapter.getDefaultAdapter();
                 } catch (Throwable t) {
-                    probeError = "manager: " + t;
+                    probeError = "adapter: " + t;
                 }
-                if (manager != null) {
+                if (adapter != null) {
                     for (int profile : PROBE_PROFILES) {
-                        int state = probe(manager, profile);
+                        int state = probe(adapter, profile);
                         if (state >= 0) answered = true;
                         if (state > 0) found = true;
                     }
@@ -702,31 +715,56 @@ final class DirectAirohaController {
             return probed;
         }
 
-        /** -1 profile unsupported, 0 not connected, 1 this headset connected. */
-        @SuppressWarnings("unchecked")
-        private int probe(BluetoothAdapter adapter, int profile) {
-            try {
-                // BluetoothAdapter.getConnectedDevices(int) is a hidden API;
-                // reflect so the module keeps building against the public SDK.
-                Object result = adapter.getClass()
-                        .getMethod("getConnectedDevices", int.class)
-                        .invoke(adapter, Integer.valueOf(profile));
-                return matches((List<BluetoothDevice>) result);
-            } catch (Throwable t) {
-                if (probeError == null) {
-                    Throwable cause = t.getCause() != null ? t.getCause() : t;
-                    probeError = "p" + profile + ": " + cause;
-                }
-                return -1;
-            }
-        }
-
-        /** -1 profile unsupported, 0 not connected, 1 this headset connected. */
+        /**
+         * -1 profile unsupported, 0 not connected, 1 this headset connected.
+         *
+         * <p>{@code BluetoothAdapter.getConnectedDevices(int)} does not exist on
+         * this build -- it is not declared on the class at all, and the reflective
+         * call threw on every attempt:
+         *
+         * <pre>
+         * probe unanswered (p2: java.lang.NoSuchMethodException:
+         *     android.bluetooth.BluetoothAdapter.getConnectedDevices [int])
+         * </pre>
+         *
+         * <p>Measured 2026-10-13.  Because {@code answered} stayed false the probe
+         * fell through to the manager route, which used the same missing method
+         * and failed identically, so the result was {@code PROBE_UNKNOWN} forever
+         * and {@code syncOnce()}'s {@code != PROBE_CONNECTED} guard never opened --
+         * the once-per-connection mode and battery read simply never ran.
+         *
+         * <p>{@code BluetoothManager#getConnectedDevices(int)} is public on this
+         * build and returns the connected {@link BluetoothDevice}s, which is what
+         * {@link #matches} needs to confirm the peer is this headset.  It is the
+         * primary route now; see {@link #connectionState}.
+         */
         private int probe(BluetoothManager manager, int profile) {
             try {
                 return matches(manager.getConnectedDevices(profile));
             } catch (Throwable t) {
                 if (probeError == null) probeError = "m" + profile + ": " + t;
+                return -1;
+            }
+        }
+
+        /**
+         * Last resort: {@code BluetoothAdapter#getProfileConnectionState(int)}.
+         *
+         * <p>Public API, and the call {@link #audioProfileConnected} already uses
+         * successfully on this ROM.  It answers "is this profile connected to
+         * <em>something</em>", not "to this headset", so it is only consulted when
+         * the manager route produced no answer at all -- and even then the session
+         * only ever treats a positive result as a hint that the headset is present.
+         */
+        private int probe(BluetoothAdapter adapter, int profile) {
+            try {
+                int state = adapter.getProfileConnectionState(profile);
+                return state == BluetoothProfile.STATE_CONNECTED ? 1 : 0;
+            } catch (Throwable t) {
+                if (probeError == null) {
+                    Throwable cause = t.getCause() != null ? t.getCause() : t;
+                    probeError = "p" + profile + ": " + cause;
+                }
                 return -1;
             }
         }
