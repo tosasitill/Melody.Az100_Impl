@@ -2214,9 +2214,153 @@ final class LeAudioTransportHook {
             }
             case "status":
                 return status(adapter);
+            // Which ROM methods tolerate a null device?  Measured, not guessed.
+            case "nullprobe":
+                return nullProbe();
             default:
                 return "unknown action: " + parts[0];
         }
+    }
+
+    /**
+     * Calls the ROM's device-taking methods with {@code null} and reports which
+     * ones throw.
+     *
+     * <p>The vendor extension in {@code ActiveDeviceManager} hands a null device
+     * straight to {@code AdapterService.isProfileSupported()}, which crashed the
+     * whole Bluetooth process 145 times -- see
+     * {@code OplusDualModeCoexistHook.hookNullDeviceProfileQuery()}.  That fix
+     * covers the one method measured to crash.  This probe asks the same
+     * question of the rest of the surface so the guards can be placed on
+     * evidence instead of on the decompiler's say-so.
+     *
+     * <p>Every call is wrapped: a {@code NullPointerException} here is a result,
+     * not a fault.  Nothing is called that writes state -- the setters are
+     * deliberately left out, because a probe must not be able to corrupt the
+     * config it is inspecting.
+     */
+    private static String nullProbe() {
+        if (adapterService == null) return "no adapter service";
+        StringBuilder report = new StringBuilder();
+        BluetoothDevice nil = null;
+
+        // AdapterService: the layer the vendor extension calls into.  These are
+        // the same signatures the ROM passes a device to internally.
+        probe(report, "adapter.isProfileSupported(null,1)", adapterService,
+                "isProfileSupported", new Class<?>[] {BluetoothDevice.class, int.class},
+                nil, 1);
+        probe(report, "adapter.getProfileConnectionPolicy(null,1)", adapterService,
+                "getProfileConnectionPolicy", new Class<?>[] {BluetoothDevice.class, int.class},
+                nil, 1);
+        probe(report, "adapter.getConnectionState(null)", adapterService,
+                "getConnectionState", new Class<?>[] {BluetoothDevice.class}, (Object) nil);
+        probe(report, "adapter.getRemoteUuids(null)", adapterService,
+                "getRemoteUuids", new Class<?>[] {BluetoothDevice.class}, (Object) nil);
+        probe(report, "adapter.getPreferredAudioProfiles(null)", adapterService,
+                "getPreferredAudioProfiles", new Class<?>[] {BluetoothDevice.class}, (Object) nil);
+        probe(report, "adapter.getRemoteClass(null)", adapterService,
+                "getRemoteClass", new Class<?>[] {BluetoothDevice.class}, (Object) nil);
+        probe(report, "adapter.getRemoteName(null)", adapterService,
+                "getRemoteName", new Class<?>[] {BluetoothDevice.class}, (Object) nil);
+        probe(report, "adapter.getBondState(null)", adapterService,
+                "getBondState", new Class<?>[] {BluetoothDevice.class}, (Object) nil);
+        probe(report, "adapter.getDeviceType(null)", adapterService,
+                "getDeviceType", new Class<?>[] {BluetoothDevice.class}, (Object) nil);
+
+        probeService(report, "lea", profileService("getLeAudioService"), new String[] {
+                "getConnectionState", "getGroupId", "getGroupDevices", "getLeadDevice"});
+        probeService(report, "vcs", profileService("getVolumeControlService"), new String[] {
+                "getConnectionState", "getGroupId"});
+        probeService(report, "a2dp", profileService("getA2dpService"), new String[] {
+                "getConnectionState"});
+        probeService(report, "hfp", profileService("getHeadsetService"), new String[] {
+                "getConnectionState"});
+        probeService(report, "bass", profileService("getBassClientService"), new String[] {
+                "getConnectionState"});
+
+        // ConnectableProfile is the shared base for every connectable profile, so
+        // one unguarded dereference here is every profile's problem.  Declared on
+        // the base, which is why findMethod() walks the hierarchy.
+        probe(report, "profile.getConnectionPolicy(null)", profileService("getA2dpService"),
+                "getConnectionPolicy", new Class<?>[] {BluetoothDevice.class}, (Object) null);
+        probe(report, "profile.okToConnect(null)", profileService("getA2dpService"),
+                "okToConnect", new Class<?>[] {BluetoothDevice.class}, (Object) null);
+        probe(report, "profile.handleBondStateChanged(null,0,0)",
+                profileService("getA2dpService"), "handleBondStateChanged",
+                new Class<?>[] {BluetoothDevice.class, int.class, int.class},
+                (Object) null, 0, 0);
+
+        return report.toString();
+    }
+
+    /** Every one-arg device method on a profile service, with null. */
+    private static void probeService(StringBuilder report, String label, Object service,
+                                     String[] methods) {
+        if (service == null) {
+            report.append(label).append(": not running\n");
+            return;
+        }
+        for (String name : methods) {
+            probe(report, label + "." + name + "(null)", service, name,
+                    new Class<?>[] {BluetoothDevice.class}, (Object) null);
+        }
+    }
+
+    /**
+     * Resolves the method by its declared signature and invokes it with null.
+     *
+     * <p>Explicit parameter types rather than {@code XposedHelpers.callMethod}:
+     * that helper derives the signature from the argument classes, and a null
+     * argument has no class -- it cannot find the method at all.
+     */
+    private static void probe(StringBuilder report, String label, Object target,
+                              String name, Class<?>[] signature, Object... args) {
+        String outcome;
+        try {
+            java.lang.reflect.Method method = findMethod(target.getClass(), name, signature);
+            method.setAccessible(true);
+            Object result = method.invoke(target, args);
+            outcome = "ok" + (result == null ? "(null)" : "(" + shortValue(result) + ")");
+        } catch (Throwable t) {
+            Throwable cause = t;
+            if (t instanceof java.lang.reflect.InvocationTargetException && t.getCause() != null) {
+                cause = t.getCause();
+            }
+            outcome = cause.getClass().getSimpleName()
+                    + (cause.getMessage() == null ? ""
+                            : ": " + cause.getMessage().split("\n")[0]);
+        }
+        report.append(label).append(" -> ").append(outcome).append('\n');
+        Logs.trace("nullprobe: " + label + " -> " + outcome);
+    }
+
+    /**
+     * Finds a method by name and parameter types, walking up the class
+     * hierarchy.
+     *
+     * <p>{@code XposedHelpers.findMethodExact} only looks at the named class,
+     * and several of the methods that matter here -- {@code okToConnect},
+     * {@code getConnectionPolicy} -- are declared once on the shared
+     * {@code ConnectableProfile} base rather than on each profile service.
+     */
+    private static java.lang.reflect.Method findMethod(Class<?> clazz, String name,
+                                                       Class<?>[] signature)
+            throws NoSuchMethodException {
+        for (Class<?> c = clazz; c != null; c = c.getSuperclass()) {
+            try {
+                return c.getDeclaredMethod(name, signature);
+            } catch (NoSuchMethodException ignored) {
+                // keep walking
+            }
+        }
+        throw new NoSuchMethodException(clazz.getName() + "#" + name);
+    }
+
+    /** Keep one line per probe: some of these return arrays or lists. */
+    private static String shortValue(Object value) {
+        String text = String.valueOf(value);
+        if (text.length() > 60) text = text.substring(0, 60) + "...";
+        return text.replace('\n', ' ');
     }
 
     /**
