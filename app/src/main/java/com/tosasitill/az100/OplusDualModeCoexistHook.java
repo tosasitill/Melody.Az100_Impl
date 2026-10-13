@@ -13,6 +13,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
 import de.robv.android.xposed.XC_MethodHook;
+import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 
 /**
@@ -222,6 +223,8 @@ final class OplusDualModeCoexistHook {
             "com.android.bluetooth.le_audio.LeAudioService";
     private static final String A2DP_SERVICE =
             "com.android.bluetooth.a2dp.A2dpService";
+    private static final String VCS_SERVICE =
+            "com.android.bluetooth.vc.VolumeControlService";
     private static final String ADAPTER_SERVICE =
             "com.android.bluetooth.btservice.AdapterService";
     private static final String CONNECTABLE_PROFILE =
@@ -2378,8 +2381,8 @@ final class OplusDualModeCoexistHook {
      *
      * <h2>Measured failure (2026-10-13)</h2>
      *
-     * <p>145 crash reports in {@code /data/system/dropbox}, 86 of them through
-     * this path, all the same {@code NullPointerException}:
+     * <p>145 crash reports in {@code /data/system/dropbox}, all the same
+     * {@code NullPointerException}, reached from four vendor callbacks:
      *
      * <pre>
      * java.lang.NullPointerException: Attempt to invoke virtual method
@@ -2391,53 +2394,154 @@ final class OplusDualModeCoexistHook {
      *   at ActiveDeviceManager.handleHfpActiveDeviceChanged
      * </pre>
      *
-     * <p>{@code ActiveDeviceManager.handleHfpActiveDeviceChanged(device)} passes
-     * {@code device} straight to the vendor extension <em>before</em> its own
-     * null checks, and a HFP deactivation carries {@code null} by definition --
-     * that is exactly what {@code HeadsetService.removeActiveDevice()} produces,
-     * which this module calls as part of the LE Audio hand-over.  The vendor
-     * extension then asks {@code isAllSupportedClassicAudioProfilesActive(null)},
-     * which calls {@code isProfileSupported(null, ...)}, and the decompiled body
-     * of {@code ConnectableProfile.Companion.isSupported()} opens with
-     * {@code p8.getClass(); p9.getClass();} -- no null check anywhere on the way
-     * down.
-     *
-     * <p>The other three paths reach the same missing check from the vendor's
-     * own callbacks:
-     *
      * <pre>
-     * ActiveDeviceManager.handleA2dpActiveDeviceChanged   (32 crashes)
-     * BassClientService.connect                           (17 crashes)
-     * PhonePolicy.processProfileStateChanged              ( 7 crashes)
+     * oplusHandleHfpActiveDeviceChanged:1547      86 crashes
+     * handleA2dpActiveDeviceChanged:76            32
+     * BassClientService.connect                   17
+     * PhonePolicy.processProfileStateChanged       7
      * </pre>
      *
-     * <p>Answering {@code false} is what the method already returns for a device
-     * with no profile support, and it is the answer that keeps the caller on its
-     * existing path: {@code isAllSupportedClassicAudioProfilesActive()} treats
-     * {@code false} as "classic profiles are not all up", which for a null
-     * device is true in every sense.  A non-null device is untouched.
+     * <p>{@code ActiveDeviceManager.handleHfpActiveDeviceChanged(device)} passes
+     * {@code device} to the vendor extension <em>before</em> its own null checks,
+     * and an HFP deactivation carries {@code null} by definition -- exactly what
+     * {@code HeadsetService.removeActiveDevice()} produces, which this module
+     * calls as part of the LE Audio hand-over.  The extension then asks
+     * {@code isAllSupportedClassicAudioProfilesActive(null)}, and the decompiled
+     * body of {@code ConnectableProfile.Companion.isSupported()} opens with
+     * {@code p8.getClass(); p9.getClass();} -- no null check anywhere down the
+     * chain.
      *
-     * <p>This is deliberately <em>not</em> conditioned on the address being an
-     * AZ100: the ROM crashes on any {@code null} here, for any device, and a
-     * process death takes every other connection down with it.  Nothing about
-     * the fix is earbud-specific.
+     * <h2>The rest of the surface</h2>
+     *
+     * <p>Which other methods share the defect is not something to guess at, so
+     * the module carries a {@code nullprobe} console action that calls each one
+     * with {@code null} under try/catch and records the outcome.  Measured on
+     * this ROM:
+     *
+     * <pre>
+     *   adapter.isProfileSupported(null, 1)            ok(false)   [guarded below]
+     *   adapter.getProfileConnectionPolicy(null, 1)    NPE  &lt;-- StorageManager:993 p1.getClass()
+     *   vcs.getConnectionState(null)                   NPE  &lt;-- ConcurrentHashMap.get(null)
+     *   a2dp.getConnectionState(null)                  NPE  &lt;-- same
+     *   profile.getConnectionPolicy(null)              NPE  &lt;-- ConnectableProfile:41 p2.getClass()
+     *   profile.okToConnect(null)                      NPE  &lt;-- ConnectableProfile:67 p5.getClass()
+     *
+     *   adapter.getConnectionState(null)               ok(0)
+     *   adapter.getRemoteUuids(null)                   ok(null)
+     *   adapter.getRemoteName(null)                    ok(null)
+     *   adapter.getBondState(null)                     ok(10)
+     *   adapter.getRemoteClass(null)                   ok(0)
+     *   lea.getConnectionState / getGroupId / getGroupDevices / getLeadDevice   all ok
+     *   hfp.getConnectionState(null)                   ok(0)
+     *   bass.getConnectionState(null)                  ok(0)
+     *   profile.handleBondStateChanged(null, 0, 0)     ok(null)
+     * </pre>
+     *
+     * <p>Only the six that throw are guarded.  Guarding a method that already
+     * tolerates null would be dead code that still costs a hook on a hot path,
+     * and the probe is what makes that distinction possible.
+     *
+     * <h2>Why these answers</h2>
+     *
+     * <p>Each guard returns the value the method already produces for a device
+     * it does not know about, so a null device takes the same path as an
+     * unpaired one and no caller has to learn a new case:
+     *
+     * <ul>
+     *   <li>{@code isProfileSupported} -> {@code false}: "not supported".
+     *   <li>{@code getProfileConnectionPolicy} -> {@code -1}: the storage layer's
+     *       own answer for an unknown device ({@code StorageManager:1002}).
+     *   <li>{@code getConnectionState} -> {@code 0} ({@code DISCONNECTED}): what
+     *       the same method returns for a device with no state machine.
+     *   <li>{@code getConnectionPolicy} -> {@code -1}: {@code CONNECTION_POLICY_UNKNOWN},
+     *       the value {@code okToConnect} treats as "no opinion, allow".
+     *   <li>{@code okToConnect} -> {@code true}: a null device is not a reason to
+     *       refuse a connection, and this method is also a gate for real
+     *       connections; refusing here could strand a genuine one.
+     * </ul>
+     *
+     * <p>None of this is conditioned on the address being an AZ100.  The ROM
+     * crashes on any {@code null}, for any device, and a process death takes
+     * every other connection down with it -- nothing about the fix is
+     * earbud-specific.
      */
     private static void hookNullDeviceProfileQuery(ClassLoader cl) {
-        try {
-            Class<?> adapterService = XposedHelpers.findClass(ADAPTER_SERVICE, cl);
-            XposedHelpers.findAndHookMethod(adapterService, "isProfileSupported",
-                    BluetoothDevice.class, int.class, new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            if (param.args[0] != null) return;
-                            param.setResult(Boolean.FALSE);
-                            noteOnce("nullDeviceProfileQuery");
-                        }
-                    });
-            Logs.trace("dual-coexist: isProfileSupported null guard installed");
-        } catch (Throwable t) {
-            Logs.e("dual-coexist: isProfileSupported null guard failed", t);
-            Logs.trace("dual-coexist: isProfileSupported null guard FAILED - " + t);
+        hookNullDevice(cl, ADAPTER_SERVICE, "isProfileSupported",
+                new Class<?>[] {BluetoothDevice.class, int.class}, Boolean.FALSE, 0);
+        hookNullDevice(cl, ADAPTER_SERVICE, "getProfileConnectionPolicy",
+                new Class<?>[] {BluetoothDevice.class, int.class}, -1, 0);
+        hookNullDevice(cl, CONNECTABLE_PROFILE, "getConnectionPolicy",
+                new Class<?>[] {BluetoothDevice.class}, -1, 0);
+        hookNullDevice(cl, CONNECTABLE_PROFILE, "okToConnect",
+                new Class<?>[] {BluetoothDevice.class}, Boolean.TRUE, 0);
+        // The per-profile state lookups.  Each backs its table with a
+        // ConcurrentHashMap, which rejects a null key outright.
+        for (String service : new String[] {A2DP_SERVICE, VCS_SERVICE, HEADSET_SERVICE}) {
+            hookNullDevice(cl, service, "getConnectionState",
+                    new Class<?>[] {BluetoothDevice.class}, 0, 0);
         }
+    }
+
+    /**
+     * Refuses a null device on one method, returning a substitute result.
+     *
+     * <p>{@code deviceArg} is the index of the device parameter; the rest of the
+     * signature is passed through so overloads are told apart.  A method that is
+     * missing on this ROM is skipped quietly -- these names come from
+     * decompiled stock code, and a ROM revision is allowed to move them.
+     */
+    private static void hookNullDevice(ClassLoader cl, String className, String method,
+                                       Class<?>[] signature, Object substitute, int deviceArg) {
+        try {
+            Class<?> clazz = XposedHelpers.findClass(className, cl);
+            java.lang.reflect.Method target = findMethod(clazz, method, signature);
+            if (target == null) {
+                Logs.trace("dual-coexist: no such method " + simple(className) + "#" + method);
+                return;
+            }
+            XposedBridge.hookMethod(target, new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam param) {
+                    if (param.args[deviceArg] != null) return;
+                    param.setResult(substitute);
+                    noteOnce("nullDevice@" + method);
+                }
+            });
+            Logs.trace("dual-coexist: null guard on " + simple(className) + "#" + method);
+        } catch (Throwable t) {
+            // Absent on this ROM build, or already hooked: neither is fatal.
+            Logs.trace("dual-coexist: no null guard for " + simple(className) + "#" + method
+                    + " - " + t);
+        }
+    }
+
+    /**
+     * Resolves a method by name and parameter types, walking up the hierarchy.
+     *
+     * <p>Not {@code findAndHookMethod}: that helper builds its signature from a
+     * varargs list, and passing an array of {@code Class} through it does not
+     * expand the way it looks like it should -- measured on device, every call
+     * failed with "parameter type must either be specified as Class or String".
+     * Resolving the {@code Method} directly is also the only way to reach
+     * {@code getConnectionPolicy} and {@code okToConnect}, which are declared on
+     * the shared {@code ConnectableProfile} base rather than on each profile.
+     *
+     * @return the method, or {@code null} when this ROM build does not have it
+     */
+    private static java.lang.reflect.Method findMethod(Class<?> clazz, String name,
+                                                       Class<?>[] signature) {
+        for (Class<?> c = clazz; c != null; c = c.getSuperclass()) {
+            try {
+                return c.getDeclaredMethod(name, signature);
+            } catch (NoSuchMethodException ignored) {
+                // keep walking up
+            }
+        }
+        return null;
+    }
+
+    private static String simple(String className) {
+        int dot = className.lastIndexOf('.');
+        return dot < 0 ? className : className.substring(dot + 1);
     }
 
     private static boolean isAz100Arg(Object arg) {
