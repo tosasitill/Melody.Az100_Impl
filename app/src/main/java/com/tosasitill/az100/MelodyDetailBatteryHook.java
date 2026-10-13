@@ -1,16 +1,14 @@
 package com.tosasitill.az100;
 
 import android.app.Activity;
-import android.graphics.Color;
+import android.graphics.Typeface;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.Button;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -25,6 +23,7 @@ final class MelodyDetailBatteryHook {
             "com.oplus.melody.ui.component.detail.DetailMainActivity";
     private static final int MENU_ITEM_ID = 0x415a1001;
     private static final int PAGE_TAG = 0x415a1002;
+    private static final int DANGER = 0xFFE5484D;
 
     private MelodyDetailBatteryHook() {
     }
@@ -82,84 +81,147 @@ final class MelodyDetailBatteryHook {
      * database.  Keep the normal Activity/toolbar shell, but replace the
      * catalog fragment with a small, deterministic AZ100 status page.  This
      * also means a missing cloud model file can never block the page itself.
+     *
+     * <p>Laid out with {@link Ui}, the same pieces the module's own settings
+     * page uses, so the two entry points read as one product.
      */
     private static void installAz100Page(Activity activity) {
         View decor = activity.getWindow().getDecorView();
         if (decor.getTag(PAGE_TAG) != null) return;
 
-        boolean night = (activity.getResources().getConfiguration().uiMode
-                & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
-                == android.content.res.Configuration.UI_MODE_NIGHT_YES;
-        int foreground = night ? Color.WHITE : Color.rgb(32, 33, 36);
-        int secondary = night ? Color.rgb(190, 190, 190) : Color.rgb(95, 99, 104);
-        int background = night ? Color.rgb(18, 18, 18) : Color.WHITE;
-        int spacing = dp(activity, 16);
+        Ui.Palette palette = Ui.Palette.of(activity);
+        Ui.Page page = Ui.page(activity, palette);
+        LinearLayout column = page.column;
 
-        ScrollView scroll = new ScrollView(activity);
-        scroll.setFillViewport(true);
-        scroll.setBackgroundColor(background);
-        LinearLayout page = new LinearLayout(activity);
-        page.setOrientation(LinearLayout.VERTICAL);
-        page.setPadding(spacing, dp(activity, 24), spacing, dp(activity, 32));
-        scroll.addView(page, new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        TextView heading = text(activity, "Technics EAH-AZ100", 24, foreground);
-        heading.setTypeface(heading.getTypeface(), android.graphics.Typeface.BOLD);
-        page.addView(heading, matchWrap(0));
-
-        TextView description = text(activity, "耳机详情", 15, secondary);
-        LinearLayout.LayoutParams descriptionParams = matchWrap(dp(activity, 8));
-        page.addView(description, descriptionParams);
-
-        TextView connection = text(activity, "连接状态：检查中", 16, foreground);
-        page.addView(connection, matchWrap(dp(activity, 28)));
-
-        TextView[] batteryValues = new TextView[3];
-        page.addView(sectionTitle(activity, "电量", foreground), matchWrap(dp(activity, 8)));
-        addBatteryRow(activity, page, "左耳", batteryValues, 0, foreground, secondary);
-        addBatteryRow(activity, page, "右耳", batteryValues, 1, foreground, secondary);
-        addBatteryRow(activity, page, "充电盒", batteryValues, 2, foreground, secondary);
-
-        Button refresh = new Button(activity);
-        refresh.setText("立即刷新电量");
-        refresh.setAllCaps(false);
-        LinearLayout.LayoutParams buttonParams = matchWrap(dp(activity, 24));
-        buttonParams.gravity = Gravity.START;
-        page.addView(refresh, buttonParams);
-
-        TextView status = text(activity, "", 14, secondary);
-        page.addView(status, matchWrap(dp(activity, 12)));
-
-        updateConnection(activity, connection);
-        updateBatteryValues(DirectAirohaController.cachedBattery(Az100Hook.AZ100_MAC), batteryValues);
-        refresh.setOnClickListener(view -> requestRefresh(activity, refresh, batteryValues,
-                connection, status));
+        TextView connection = addHeader(activity, palette, column);
+        addBatteryCard(activity, palette, column, connection);
+        addSettingsCard(activity, palette, column);
 
         activity.setTitle(Az100Hook.AZ100_NAME);
-        addSettingsSection(activity, page, foreground, secondary);
+
         int containerId = activity.getResources().getIdentifier(
                 "melody_ui_fragment_container", "id", activity.getPackageName());
         View containerView = containerId == 0 ? null : activity.findViewById(containerId);
         if (containerView instanceof ViewGroup) {
             ViewGroup container = (ViewGroup) containerView;
             container.removeAllViews();
-            container.addView(scroll, new ViewGroup.LayoutParams(
+            container.addView(page.scroll, new ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         } else {
             // Older Melody builds may use a different container id.  This
             // fallback still gives the user a working page, at the cost of
             // losing the stock toolbar on those builds.
-            activity.setContentView(scroll);
+            activity.setContentView(page.scroll);
         }
+
         decor.setTag(PAGE_TAG, Boolean.TRUE);
         Logs.trace("AZ100 detail page installed");
     }
 
-    private static TextView sectionTitle(Activity activity, String value, int color) {
-        TextView view = text(activity, value, 18, color);
-        view.setTypeface(view.getTypeface(), android.graphics.Typeface.BOLD);
-        return view;
+    /**
+     * Product name plus a connection chip that tracks the battery refresh.
+     *
+     * @return the chip, which the battery card updates when it refreshes
+     */
+    private static TextView addHeader(final Activity activity, Ui.Palette palette,
+                                      LinearLayout column) {
+        LinearLayout header = new LinearLayout(activity);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+
+        LinearLayout titles = new LinearLayout(activity);
+        titles.setOrientation(LinearLayout.VERTICAL);
+        titles.addView(Ui.display(activity, palette, "Technics EAH-AZ100"));
+        TextView subtitle = Ui.caption(activity, palette, "耳机详情");
+        subtitle.setPadding(0, Ui.dp(activity, 3), 0, 0);
+        titles.addView(subtitle);
+        header.addView(titles, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        final TextView connection = Ui.pill(activity, palette, "检查中");
+        header.addView(connection);
+        column.addView(header);
+
+        boolean connected = DirectAirohaController.reachable(activity, Az100Hook.AZ100_MAC);
+        Ui.setPill(connection, palette, connected, connected ? "已连接" : "未连接");
+        return connection;
+    }
+
+    /** Three battery rows and the refresh button, in one card. */
+    private static void addBatteryCard(final Activity activity, Ui.Palette palette,
+                                       LinearLayout column, final TextView connection) {
+        column.addView(Ui.sectionLabel(activity, palette, "电量"), spaced(activity, 26, 8));
+
+        LinearLayout card = Ui.card(activity, palette);
+        final TextView[] values = new TextView[3];
+        final Ui.Meter[] meters = new Ui.Meter[3];
+        String[] labels = {"左耳", "右耳", "充电盒"};
+        for (int i = 0; i < labels.length; i++) {
+            if (i > 0) card.addView(Ui.divider(activity, palette));
+            addBatteryRow(activity, palette, card, labels[i], values, meters, i);
+        }
+        column.addView(card);
+
+        final TextView refresh = Ui.button(activity, palette, "立即刷新电量");
+        final TextView status = Ui.caption(activity, palette, "");
+
+        refresh.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View view) {
+                requestRefresh(activity, view, values, meters, connection, refresh, status);
+            }
+        });
+
+        LinearLayout actions = new LinearLayout(activity);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.CENTER_VERTICAL);
+        actions.addView(refresh);
+        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        statusParams.leftMargin = Ui.dp(activity, 12);
+        actions.addView(status, statusParams);
+        column.addView(actions, spaced(activity, 14, 0));
+
+        updateBatteryValues(DirectAirohaController.cachedBattery(Az100Hook.AZ100_MAC),
+                values, meters);
+    }
+
+    private static void addBatteryRow(Activity activity, Ui.Palette palette, LinearLayout card,
+                                      String label, TextView[] values, Ui.Meter[] meters,
+                                      int index) {
+        LinearLayout row = new LinearLayout(activity);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(Ui.dp(activity, 16), Ui.dp(activity, 13),
+                Ui.dp(activity, 16), Ui.dp(activity, 13));
+
+        LinearLayout line = new LinearLayout(activity);
+        line.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView name = Ui.body(activity, palette, label);
+        line.addView(name, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView value = Ui.body(activity, palette, "--");
+        value.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        line.addView(value);
+        row.addView(line);
+
+        Ui.Meter meter = new Ui.Meter(activity, palette);
+        LinearLayout.LayoutParams meterParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Ui.dp(activity, 5));
+        meterParams.topMargin = Ui.dp(activity, 9);
+        row.addView(meter, meterParams);
+
+        card.addView(row);
+        values[index] = value;
+        meters[index] = meter;
+    }
+
+    private static LinearLayout.LayoutParams spaced(Activity activity, int top, int bottom) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.topMargin = Ui.dp(activity, top);
+        params.bottomMargin = Ui.dp(activity, bottom);
+        return params;
     }
 
     /**
@@ -176,60 +238,49 @@ final class MelodyDetailBatteryHook {
      * failed round trip is surfaced in the status line rather than swallowed:
      * a switch that moves but does not save is worse than no switch.
      */
-    private static void addSettingsSection(final Activity activity, LinearLayout page,
-                                           int foreground, int secondary) {
-        page.addView(sectionTitle(activity, "模块设置", foreground), matchWrap(dp(activity, 32)));
+    private static void addSettingsCard(final Activity activity, Ui.Palette palette,
+                                        LinearLayout column) {
+        column.addView(Ui.sectionLabel(activity, palette, "模块设置"), spaced(activity, 26, 8));
 
-        final TextView status = text(activity, "", 13, secondary);
-
+        final TextView status = Ui.caption(activity, palette, "");
+        LinearLayout card = Ui.card(activity, palette);
         Bundle current = readSettings(activity);
-        addSettingSwitch(activity, page, status, Prefs.KEY_AUTO_LEA, Prefs.DEFAULT_AUTO_LEA,
-                "自动切换到 LE Audio",
-                "关闭后，重连时不再自动升级到 LEA；系统自带的 LE Audio 开关仍然有效。",
-                foreground, secondary, current);
-        addSettingSwitch(activity, page, status, Prefs.KEY_TWIN, Prefs.DEFAULT_TWIN,
-                "自动连接另一只耳塞",
-                "一只连上后，把同组另一只也连上，双耳才能组成立体声组。",
-                foreground, secondary, current);
-        addSettingSwitch(activity, page, status, Prefs.KEY_VOLUME_FIX, Prefs.DEFAULT_VOLUME_FIX,
-                "音量修复",
-                "抬高低音量下限，并丢弃重复的绝对音量写入。",
-                foreground, secondary, current);
-        addSettingSwitch(activity, page, status, Prefs.KEY_DIAGNOSE, Prefs.DEFAULT_DIAGNOSE,
-                "详细日志",
-                "写入 UUID 流水线与音量收发细节，仅影响日志。",
-                foreground, secondary, current);
 
-        page.addView(status, matchWrap(dp(activity, 8)));
+        addSettingSwitch(activity, palette, card, status, Prefs.KEY_AUTO_LEA,
+                Prefs.DEFAULT_AUTO_LEA, "自动切换到 LE Audio",
+                "关闭后重连不再升级到 LEA，系统开关仍然有效。", current);
+        card.addView(Ui.divider(activity, palette));
+        addSettingSwitch(activity, palette, card, status, Prefs.KEY_TWIN, Prefs.DEFAULT_TWIN,
+                "自动连接另一只耳塞",
+                "一只连上后，把同组另一只也连上。", current);
+        card.addView(Ui.divider(activity, palette));
+        addSettingSwitch(activity, palette, card, status, Prefs.KEY_VOLUME_FIX,
+                Prefs.DEFAULT_VOLUME_FIX, "音量修复",
+                "抬高低音量下限，并丢弃重复的绝对音量写入。", current);
+        card.addView(Ui.divider(activity, palette));
+        addSettingSwitch(activity, palette, card, status, Prefs.KEY_DIAGNOSE,
+                Prefs.DEFAULT_DIAGNOSE, "详细日志",
+                "记录 UUID 流水线与音量收发细节，仅影响日志。", current);
+        column.addView(card);
+
+        column.addView(status, spaced(activity, 10, 0));
     }
 
     /** One labelled switch, wired to the config provider. */
-    private static void addSettingSwitch(final Activity activity, LinearLayout page,
-                                         final TextView status, final String key,
-                                         boolean fallback, String label, String summary,
-                                         int foreground, int secondary, Bundle current) {
-        LinearLayout block = new LinearLayout(activity);
-        block.setOrientation(LinearLayout.VERTICAL);
-
-        final android.widget.Switch toggle = new android.widget.Switch(activity);
-        toggle.setText(label);
-        toggle.setTextColor(foreground);
-        toggle.setTextSize(16);
+    private static void addSettingSwitch(final Activity activity, Ui.Palette palette,
+                                         LinearLayout card, final TextView status,
+                                         final String key, boolean fallback, String label,
+                                         String summary, Bundle current) {
+        final Ui.Toggle toggle = new Ui.Toggle(activity, palette);
         toggle.setChecked(current == null ? fallback : current.getBoolean(key, fallback));
-        toggle.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
-            @Override public void onCheckedChanged(android.widget.CompoundButton button,
-                                                   boolean checked) {
+        toggle.setOnChange(new Ui.OnChange() {
+            @Override public void onChanged(boolean checked) {
                 boolean ok = writeSetting(activity, key, checked);
                 status.setText(ok ? "已保存" : "保存失败 —— 模块未安装或已被卸载");
+                status.setTextColor(ok ? palette.fgSecondary : DANGER);
             }
         });
-        block.addView(toggle);
-
-        TextView hint = text(activity, summary, 13, secondary);
-        hint.setPadding(0, dp(activity, 4), 0, 0);
-        block.addView(hint);
-
-        page.addView(block, matchWrap(dp(activity, 12)));
+        card.addView(Ui.row(activity, palette, label, summary, toggle));
     }
 
     /** Every switch in one round trip, or {@code null} when the module is gone. */
@@ -257,50 +308,16 @@ final class MelodyDetailBatteryHook {
         }
     }
 
-    private static void addBatteryRow(Activity activity, LinearLayout page, String label,
-                                      TextView[] values, int index, int foreground, int secondary) {
-        LinearLayout row = new LinearLayout(activity);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        TextView name = text(activity, label, 16, foreground);
-        TextView value = text(activity, "--", 16, secondary);
-        value.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-        row.addView(name, new LinearLayout.LayoutParams(0, dp(activity, 52), 1));
-        row.addView(value, new LinearLayout.LayoutParams(dp(activity, 100),
-                dp(activity, 52)));
-        page.addView(row, matchWrap(0));
-        values[index] = value;
-    }
-
-    private static TextView text(Activity activity, String value, float size, int color) {
-        TextView view = new TextView(activity);
-        view.setText(value);
-        view.setTextSize(size);
-        view.setTextColor(color);
-        return view;
-    }
-
-    private static LinearLayout.LayoutParams matchWrap(int topMargin) {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        params.topMargin = topMargin;
-        return params;
-    }
-
-    private static int dp(Activity activity, int value) {
-        return Math.round(value * activity.getResources().getDisplayMetrics().density);
-    }
-
-    private static void updateConnection(Activity activity, TextView view) {
-        if (view == null) return;
-        view.setText("连接状态：" + (DirectAirohaController.reachable(
-                activity, Az100Hook.AZ100_MAC) ? "已连接" : "未连接"));
-    }
-
-    private static void updateBatteryValues(int[] values, TextView[] views) {
+    private static void updateBatteryValues(int[] values, TextView[] views, Ui.Meter[] meters) {
         if (views == null) return;
         for (int i = 0; i < views.length; i++) {
             if (views[i] == null) continue;
-            views[i].setText(percent(values, i));
+            String text = percent(values, i);
+            views[i].setText(text);
+            if (meters != null && meters[i] != null) {
+                meters[i].setFraction(values == null || i >= values.length
+                        || values[i] < 0 || values[i] > 100 ? 0f : values[i] / 100f);
+            }
         }
     }
 
@@ -336,13 +353,17 @@ final class MelodyDetailBatteryHook {
     }
 
     private static void requestRefresh(Activity activity, MenuItem item) {
-        requestRefresh(activity, item, null, null, null);
+        requestRefresh(activity, item, null, null, null, null, null);
     }
 
     private static void requestRefresh(Activity activity, Object control, TextView[] batteryValues,
-                                       TextView connection, TextView status) {
+                                       Ui.Meter[] meters, TextView connection,
+                                       TextView refresh, TextView status) {
         if (control instanceof View) ((View) control).setEnabled(false);
-        if (control instanceof Button) ((Button) control).setText("正在读取…");
+        if (control instanceof TextView && control == refresh) {
+            Ui.setButtonEnabled((TextView) control, false);
+            ((TextView) control).setText("正在读取…");
+        }
         if (control instanceof MenuItem) ((MenuItem) control).setTitle("正在读取");
 
         WeakReference<Activity> activityRef = new WeakReference<>(activity);
@@ -358,7 +379,10 @@ final class MelodyDetailBatteryHook {
                         View button = controlRef == null ? null : controlRef.get();
                         if (button != null) {
                             button.setEnabled(true);
-                            if (button instanceof Button) ((Button) button).setText("立即刷新电量");
+                            if (button instanceof TextView) {
+                                Ui.setButtonEnabled((TextView) button, true);
+                                ((TextView) button).setText("立即刷新电量");
+                            }
                         }
                         MenuItem action = itemRef == null ? null : itemRef.get();
                         if (action != null) {
@@ -367,7 +391,7 @@ final class MelodyDetailBatteryHook {
                         }
                         if (host.isFinishing() || host.isDestroyed()) return;
                         updateConnection(host, connection);
-                        updateBatteryValues(values, batteryValues);
+                        updateBatteryValues(values, batteryValues, meters);
                         if (status != null) {
                             status.setText(resultText(values, receivedFreshSample));
                         }
@@ -375,6 +399,12 @@ final class MelodyDetailBatteryHook {
                                 Toast.LENGTH_LONG).show();
                     });
                 });
+    }
+
+    private static void updateConnection(Activity activity, TextView view) {
+        if (view == null) return;
+        boolean connected = DirectAirohaController.reachable(activity, Az100Hook.AZ100_MAC);
+        Ui.setPill(view, Ui.Palette.of(activity), connected, connected ? "已连接" : "未连接");
     }
 
     private static String resultText(int[] values, boolean receivedFreshSample) {
