@@ -137,6 +137,7 @@ final class MelodyDetailBatteryHook {
                 connection, status));
 
         activity.setTitle(Az100Hook.AZ100_NAME);
+        addSettingsSection(activity, page, foreground, secondary);
         int containerId = activity.getResources().getIdentifier(
                 "melody_ui_fragment_container", "id", activity.getPackageName());
         View containerView = containerId == 0 ? null : activity.findViewById(containerId);
@@ -159,6 +160,101 @@ final class MelodyDetailBatteryHook {
         TextView view = text(activity, value, 18, color);
         view.setTypeface(view.getTypeface(), android.graphics.Typeface.BOLD);
         return view;
+    }
+
+    /**
+     * The module's switches, rendered inside the Melody detail page.
+     *
+     * <p>They live here rather than only in the LSPosed module page because this
+     * is where the user already is: the volume tile's 降噪 button opens this
+     * activity, so the switch that decides whether a reconnect becomes LE Audio
+     * is one tap away from the tile instead of buried in the module list.
+     *
+     * <p>Melody cannot write the module's prefs file -- different UID, and the
+     * directory is {@code 0700} -- so every change goes through
+     * {@link Az100ConfigProvider}, which runs in this module's own process.  A
+     * failed round trip is surfaced in the status line rather than swallowed:
+     * a switch that moves but does not save is worse than no switch.
+     */
+    private static void addSettingsSection(final Activity activity, LinearLayout page,
+                                           int foreground, int secondary) {
+        page.addView(sectionTitle(activity, "模块设置", foreground), matchWrap(dp(activity, 32)));
+
+        final TextView status = text(activity, "", 13, secondary);
+
+        Bundle current = readSettings(activity);
+        addSettingSwitch(activity, page, status, Prefs.KEY_AUTO_LEA, Prefs.DEFAULT_AUTO_LEA,
+                "自动切换到 LE Audio",
+                "关闭后，重连时不再自动升级到 LEA；系统自带的 LE Audio 开关仍然有效。",
+                foreground, secondary, current);
+        addSettingSwitch(activity, page, status, Prefs.KEY_TWIN, Prefs.DEFAULT_TWIN,
+                "自动连接另一只耳塞",
+                "一只连上后，把同组另一只也连上，双耳才能组成立体声组。",
+                foreground, secondary, current);
+        addSettingSwitch(activity, page, status, Prefs.KEY_VOLUME_FIX, Prefs.DEFAULT_VOLUME_FIX,
+                "音量修复",
+                "抬高低音量下限，并丢弃重复的绝对音量写入。",
+                foreground, secondary, current);
+        addSettingSwitch(activity, page, status, Prefs.KEY_DIAGNOSE, Prefs.DEFAULT_DIAGNOSE,
+                "详细日志",
+                "写入 UUID 流水线与音量收发细节，仅影响日志。",
+                foreground, secondary, current);
+
+        page.addView(status, matchWrap(dp(activity, 8)));
+    }
+
+    /** One labelled switch, wired to the config provider. */
+    private static void addSettingSwitch(final Activity activity, LinearLayout page,
+                                         final TextView status, final String key,
+                                         boolean fallback, String label, String summary,
+                                         int foreground, int secondary, Bundle current) {
+        LinearLayout block = new LinearLayout(activity);
+        block.setOrientation(LinearLayout.VERTICAL);
+
+        final android.widget.Switch toggle = new android.widget.Switch(activity);
+        toggle.setText(label);
+        toggle.setTextColor(foreground);
+        toggle.setTextSize(16);
+        toggle.setChecked(current == null ? fallback : current.getBoolean(key, fallback));
+        toggle.setOnCheckedChangeListener(new android.widget.CompoundButton.OnCheckedChangeListener() {
+            @Override public void onCheckedChanged(android.widget.CompoundButton button,
+                                                   boolean checked) {
+                boolean ok = writeSetting(activity, key, checked);
+                status.setText(ok ? "已保存" : "保存失败 —— 模块未安装或已被卸载");
+            }
+        });
+        block.addView(toggle);
+
+        TextView hint = text(activity, summary, 13, secondary);
+        hint.setPadding(0, dp(activity, 4), 0, 0);
+        block.addView(hint);
+
+        page.addView(block, matchWrap(dp(activity, 12)));
+    }
+
+    /** Every switch in one round trip, or {@code null} when the module is gone. */
+    private static Bundle readSettings(Activity activity) {
+        try {
+            return activity.getContentResolver().call(
+                    Az100ConfigProvider.URI, Az100ConfigProvider.METHOD_GET_ALL, null, null);
+        } catch (Throwable t) {
+            Logs.trace("detail: settings read failed - " + t);
+            return null;
+        }
+    }
+
+    private static boolean writeSetting(Activity activity, String key, boolean value) {
+        Bundle extras = new Bundle();
+        extras.putString(Az100ConfigProvider.EXTRA_KEY, key);
+        extras.putBoolean(Az100ConfigProvider.EXTRA_VALUE, value);
+        try {
+            Bundle result = activity.getContentResolver().call(
+                    Az100ConfigProvider.URI, Az100ConfigProvider.METHOD_SET, null, extras);
+            return result != null && result.getBoolean("ok");
+        } catch (Throwable t) {
+            Logs.trace("detail: settings write failed - " + t);
+            return false;
+        }
     }
 
     private static void addBatteryRow(Activity activity, LinearLayout page, String label,

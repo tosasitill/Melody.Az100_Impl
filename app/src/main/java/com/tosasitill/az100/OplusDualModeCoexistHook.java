@@ -753,6 +753,13 @@ final class OplusDualModeCoexistHook {
      */
     private static void connectLeaNow(Class<?> impl, Object self, BluetoothDevice device) {
         try {
+            // The settings page's master switch.  Off means this module never
+            // forces the upgrade; the system's own LE Audio switch still decides
+            // whether the profile may be used at all.
+            if (!Prefs.autoLea()) {
+                noteOnce("leaAutoConnectDisabledBySetting@" + device.getAddress());
+                return;
+            }
             Object service = XposedHelpers.getObjectField(self, ADAPTER_FIELD_ON_DUAL_MODE);
             if (service == null) return;
             Object lea = XposedHelpers.callMethod(

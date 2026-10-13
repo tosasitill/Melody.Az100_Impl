@@ -10,11 +10,20 @@
 
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:label="@string/app_name">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS" />
             </intent-filter>
         </activity>
+
+        <!-- Lets the Melody detail page (a different UID) read and write the
+             module's switches.  Exported because that page has to reach it;
+             see Az100ConfigProvider for why no permission is declared. -->
+        <provider
+            android:name=".Az100ConfigProvider"
+            android:authorities="com.tosasitill.az100.config"
+            android:exported="true" />
     </application>
 </manifest>
