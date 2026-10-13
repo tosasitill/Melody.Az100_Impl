@@ -96,7 +96,7 @@ OPPO 自家耳机的直连入口是 `OplusDualModeManagerImpl.onRemoteUuidsUpdat
 - `libbluetooth_jni.so` 的 `oplus_btif_is_lea_device()` 对非 OPPO 产品返回 false，随后 `oplus_handle_filter_uuid()` 剥掉 `184E/184F/1846/1844`。`NativeLeaDeviceHook` 在蓝牙进程内把该函数改成 `mov w0, #1; ret`。序言不匹配时拒绝改写。当前固件偏移是 `0x643180`，系统升级后要重新核对。
 - `BassClientService.mOplusBassClientService` 在这版 ROM 上从未赋值。`184F` 放行后，`connect()` 会空指针并把整批 profile 连接打断。`BassClientFixHook` 补上实例；补不上时直接让这次 BASS 连接返回 false。
 
-`SPLICE_LE_AUDIO_UUIDS` 仍是设置开关的兜底：它在 `setUuidsLe()` 入参里补 `0000184e`。这个注入不依赖 `DIAGNOSE`。`DIAGNOSE` 只控制 UUID 流水线和音量的诊断日志。
+`SPLICE_LE_AUDIO_UUIDS` 仍是设置开关的兜底：它在 `setUuidsLe()` 入参里补 `0000184e`。这个注入不依赖 `DIAGNOSE`。`DIAGNOSE` 只控制日志：UUID 流水线、音量诊断，以及 `LeAudioTransportHook` 里的 `setDeviceVolume` 记录。音量修复本身（`allowVcp`、连接策略放行、音量上报捕获、成员生命周期）是无条件安装的，关掉 `DIAGNOSE` 不会让它失效。
 
 ## 代码
 

@@ -531,7 +531,25 @@ final class LeAudioTransportHook {
      * logcat, whose tag survives a process as chatty as this one only by luck.
      */
     private static final String LOG_PATH = "/data/misc/bluetooth/az100_console.log";
+
+    /**
+     * The poll tick.
+     *
+     * <p>Deliberately left at 2 s.  A longer idle tick was tried and reverted:
+     * it breaks the documented adb workflow in {@code macos/az100-routeb.sh},
+     * which sets the property and reads the log back after a fixed wait, and it
+     * makes the first action after a quiet period take up to a full tick to be
+     * noticed.  The cost that mattered was never the tick itself -- a
+     * {@code SystemProperties} read is a JNI call with no binder and no Context,
+     * and a sleeping thread does not hold the SoC awake -- it was the
+     * {@code Settings.Global} query and the {@code stat()} that used to run on
+     * every tick.  Those now only happen while an action is pending; see
+     * {@link #consume}.
+     */
     private static final long POLL_MS = 2000L;
+
+    /** Resolved once: the {@code SystemProperties.get(String)} method. */
+    private static volatile Method systemPropertiesGet;
 
     private static volatile boolean installed;
     private static volatile ClassLoader loader;
@@ -629,7 +647,19 @@ final class LeAudioTransportHook {
         hookPairingRequest();
         if (BYPASS_CONSENT) hookConsentBypass();
         if (SPLICE_LE_AUDIO_UUIDS || DIAGNOSE) hookUuidPipeline();
-        if (DIAGNOSE) hookVolumeControl();
+        // Behaviour first, diagnostics second -- and never behind DIAGNOSE.
+        //
+        // Measured 2026-10-13: hookVolumeControl() used to be called only when
+        // DIAGNOSE was on, but four of its six hooks are behaviour, not logging.
+        // In particular captureVolumeReport() is the only writer of
+        // LAST_REPORTED, which is the only thing that can tell knownVolume()
+        // that a reconnect-time volume push would be a no-op -- and the guard
+        // that drops those redundant writes lives behind the same switch.  With
+        // DIAGNOSE off, the duplicate SetAbsoluteVolume reaches native, the VCP
+        // operation queue waits for a Volume State notification that never
+        // comes, and every operation queued behind it is stuck.
+        hookVolumeBehavior();
+        if (DIAGNOSE) hookVolumeDiagnostics();
         if (SUPPRESS_REDUNDANT_VCS_WRITES) hookVolumeWriteGuard();
         if (TWIN_AUTO_CONNECT) hookLeAudioTwin();
         if (CONSOLE) startConsole();
@@ -1049,6 +1079,18 @@ final class LeAudioTransportHook {
             XposedBridge.hookAllMethods(remoteDevices, "devicePropertyChangedCallback",
                     new XC_MethodHook() {
                         @Override protected void beforeHookedMethod(MethodHookParam param) {
+                            // This callback fires for every device the stack has
+                            // ever seen, not just ours.  Measured over 15.7 h of
+                            // idle time: 1166 calls, of which 1140 (97.8%) were
+                            // 222 unrelated addresses -- and during an active
+                            // scan it bursts to ~250 calls per 10 minutes.
+                            // Building the message first made that the single
+                            // largest writer in the Bluetooth process.
+                            //
+                            // args[0] is the raw 6-byte address, and the whole
+                            // point of the trace is the AZ100's UUID pipeline,
+                            // so gate on it before formatting anything.
+                            if (!isAz100RawAddress(param.args)) return;
                             Logs.trace("routeB: devicePropertyChangedCallback "
                                     + describe(param.args));
                         }
@@ -1060,23 +1102,56 @@ final class LeAudioTransportHook {
     }
 
     /**
-     * The volume half of the same vendor filter.
+     * {@code devicePropertyChangedCallback(byte[] address, ...)} -- does the raw
+     * address belong to the headset?
+     *
+     * <p>Fails <em>closed</em> on anything unexpected (no args, a different first
+     * argument type, a short array): the only cost of dropping a line is a gap
+     * in the diagnostic trace, whereas the cost of letting everything through is
+     * the noise this gate exists to remove.
+     */
+    private static boolean isAz100RawAddress(Object[] args) {
+        if (args == null || args.length < 1) return false;
+        Object raw = args[0];
+        if (!(raw instanceof byte[])) return false;
+        byte[] address = (byte[]) raw;
+        if (address.length < 6) return false;
+        // Native sends the address in reverse (little-endian) order; compare the
+        // last six bytes either way round so the gate does not depend on that.
+        int base = address.length - 6;
+        StringBuilder forward = new StringBuilder(17);
+        StringBuilder reverse = new StringBuilder(17);
+        for (int i = 0; i < 6; i++) {
+            appendHexByte(forward, address[base + i]);
+            appendHexByte(reverse, address[address.length - 1 - i]);
+        }
+        return matchesAddress(forward.toString()) || matchesAddress(reverse.toString());
+    }
+
+    private static void appendHexByte(StringBuilder out, byte value) {
+        if (out.length() > 0) out.append(':');
+        int v = value & 0xFF;
+        out.append(Character.forDigit(v >> 4, 16)).append(Character.forDigit(v & 0xF, 16));
+    }
+
+    /**
+     * The volume half of the vendor filter.
      *
      * <p>{@code VolumeControlService#connect} fails silently from the outside:
      * it logs {@code Remote does not have Volume Control UUID} and returns
      * {@code false}, and nothing downstream distinguishes that from "the
-     * headset refused".  Two hooks make the difference visible.
+     * headset refused".
      *
-     * <ul>
-     *   <li>{@code connect} -- the UUID list as the volume service sees it, and
-     *       the boolean it returned.  This is the one that says whether the
-     *       splice reached {@code getRemoteUuids()}.</li>
-     *   <li>{@code setDeviceVolume} -- the value the phone is pushing.  Its
-     *       domain is the headset's VCS range (0..255), so a run of readings
-     *       across a slider sweep is what shows whether the mapping is sane.</li>
-     * </ul>
+     * <h2>Why this is two methods</h2>
+     *
+     * <p>{@link #hookVolumeBehavior} installs everything that changes behaviour
+     * and is therefore unconditional; {@link #hookVolumeDiagnostics} installs
+     * the read-only logging and is gated on {@link #DIAGNOSE}.  Before the
+     * split the whole set sat behind {@code DIAGNOSE}, which meant turning the
+     * diagnostic switch off also disabled the volume fix -- measured
+     * 2026-10-13, see {@link #hookVolumeBehavior}.
      */
-    private static void hookVolumeControl() {
+    private static void hookVolumeBehavior() {
         Class<?> service = null;
         try {
             service = XposedHelpers.findClass(VOLUME_CONTROL_SERVICE, loader);
@@ -1131,20 +1206,6 @@ final class LeAudioTransportHook {
             Logs.trace("vcs: cannot hook setConnectionPolicy", t);
         }
         try {
-            XposedBridge.hookAllMethods(service, "setDeviceVolume", new XC_MethodHook() {
-                @Override protected void beforeHookedMethod(MethodHookParam param) {
-                    Object[] args = param.args;
-                    if (args == null || args.length < 2) return;
-                    String address = args[0] instanceof BluetoothDevice
-                            ? addressOf((BluetoothDevice) args[0]) : null;
-                    Logs.trace("vcs: setDeviceVolume " + mask(address) + " = " + args[1]);
-                }
-            });
-            Logs.trace("vcs: volume control diagnostics armed");
-        } catch (Throwable t) {
-            Logs.trace("vcs: cannot hook setDeviceVolume", t);
-        }
-        try {
             XposedBridge.hookAllMethods(service, "handleVolumeControlChanged",
                     new XC_MethodHook() {
                         @Override protected void beforeHookedMethod(MethodHookParam param) {
@@ -1172,6 +1233,35 @@ final class LeAudioTransportHook {
             Logs.trace("vcs: volume-report capture and member lifecycle armed");
         } catch (Throwable t) {
             Logs.trace("vcs: cannot hook handleVolumeControlChanged", t);
+        }
+    }
+
+    /**
+     * The read-only half of the volume hooks.  Safe to drop when diagnosing is
+     * off: nothing here feeds a later decision, it only records what the stack
+     * was about to push.
+     */
+    private static void hookVolumeDiagnostics() {
+        Class<?> service;
+        try {
+            service = XposedHelpers.findClass(VOLUME_CONTROL_SERVICE, loader);
+        } catch (Throwable t) {
+            Logs.trace("vcs: VolumeControlService not found", t);
+            return;
+        }
+        try {
+            XposedBridge.hookAllMethods(service, "setDeviceVolume", new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam param) {
+                    Object[] args = param.args;
+                    if (args == null || args.length < 2) return;
+                    String address = args[0] instanceof BluetoothDevice
+                            ? addressOf((BluetoothDevice) args[0]) : null;
+                    Logs.trace("vcs: setDeviceVolume " + mask(address) + " = " + args[1]);
+                }
+            });
+            Logs.trace("vcs: volume control diagnostics armed");
+        } catch (Throwable t) {
+            Logs.trace("vcs: cannot hook setDeviceVolume", t);
         }
     }
 
@@ -1239,11 +1329,11 @@ final class LeAudioTransportHook {
                 Integer last = knownVolume(key);
                 if (isNoOp(key, volume)) {
                     param.setResult(null);
-                    Logs.trace("vcs: dropped redundant write " + key + " = " + volume
+                    Logs.trace("vcs: dropped redundant write " + maskKey(key) + " = " + volume
                             + " (unchanged, known " + last + ")");
                     return;
                 }
-                Logs.trace("vcs: write " + key + " = " + volume
+                Logs.trace("vcs: write " + maskKey(key) + " = " + volume
                         + (volume != stock ? " (floor bypass, stock would send "
                                 + stock + ")" : "")
                         + (last == null ? " (first)" : " (was " + last + ")"));
@@ -1526,6 +1616,16 @@ final class LeAudioTransportHook {
         return null;
     }
 
+    /**
+     * Redact the address inside a {@link #keyOf} key ({@code d:MAC} / {@code g:N}).
+     * The group form carries no address and is passed through unchanged.
+     */
+    private static String maskKey(String key) {
+        if (key == null) return "?";
+        if (key.startsWith("d:")) return "d:" + mask(key.substring(2));
+        return key;
+    }
+
     /** Mirrors {@code VolumeControlNativeInterface}'s own clamp. */
     private static int clampLeAudioVolume(int volume) {
         if (volume != 0 && volume < LEAUDIO_VOLUME_MIN) return LEAUDIO_VOLUME_MIN;
@@ -1741,10 +1841,14 @@ final class LeAudioTransportHook {
         if (args == null || args.length < 1) return;
         if (!(args[0] instanceof Object[])) return;
         Object[] incoming = (Object[]) args[0];
-        String[] missing = missingLeAudio(incoming);
-        if (missing == null) return;
+        // Address first.  This hook runs for every device's mUuidsLe, and
+        // missingLeAudio() scans the whole incoming array; checking ownership
+        // first keeps that scan off every other device -- the same class of
+        // waste that made devicePropertyChangedCallback the top log writer.
         String address = addressOfProperties(param.thisObject);
         if (!matches(param.thisObject, address)) return;
+        String[] missing = missingLeAudio(incoming);
+        if (missing == null) return;
         Object[] extended = (Object[]) Array.newInstance(
                 incoming.getClass().getComponentType(), incoming.length + missing.length);
         System.arraycopy(incoming, 0, extended, 0, incoming.length);
@@ -1828,10 +1932,17 @@ final class LeAudioTransportHook {
     }
 
     private static void armConsole() {
-        // A plain daemon thread rather than a HandlerThread: this only needs a
-        // 2s tick, and it keeps the console independent of any Looper in the
-        // Bluetooth process.  It also makes synchronous binder calls back into
-        // AdapterService, which must not be serviced on the waiting thread.
+        // A plain daemon thread rather than a HandlerThread: this keeps the
+        // console independent of any Looper in the Bluetooth process.  It also
+        // makes synchronous binder calls back into AdapterService, which must
+        // not be serviced on the waiting thread.
+        //
+        // The tick is adaptive.  Measured 2026-10-13: a fixed 2 s tick meant
+        // 43200 wakeups/day, each one a property read, a Settings.Global query
+        // and a stat() on the action file, just to discover the user is not
+        // running an experiment.  The property read is what arms the console,
+        // so it stays cheap (see readFromProperty), and the rest of the probe is
+        // only paid while an action is actually present.
         Thread thread = new Thread(new Runnable() {
             @Override public void run() {
                 Thread.currentThread().setUncaughtExceptionHandler(
@@ -1872,10 +1983,28 @@ final class LeAudioTransportHook {
         Logs.trace(message);
     }
 
+    /**
+     * One poll pass.
+     *
+     * <p>The cheap channel -- a single cached reflective property read -- runs
+     * every tick.  The two expensive ones only run once it says an action is
+     * waiting: {@code Settings.Global} goes through the content resolver and so
+     * does a binder round trip, and the file probe is a {@code stat()} on FUSE.
+     * Measured 2026-10-13, those two used to run 43200 times a day to discover
+     * that nobody was running an experiment.
+     */
     private static void consume() {
         String property = readFromProperty();
-        String settings = readFromSettings();
-        String file = readFromFile();
+        boolean pending = property != null && !property.trim().isEmpty()
+                && !IDLE.equals(property.trim());
+        String settings = null;
+        String file = null;
+        // The first few ticks probe every channel regardless, so the startup
+        // diagnostics in az100_console.log still show what each one answers.
+        if (pending || ticks < 3) {
+            settings = readFromSettings();
+            file = readFromFile();
+        }
         if (ticks < 3) {
             ticks++;
             console("tick property=" + quote(property)
@@ -1910,12 +2039,20 @@ final class LeAudioTransportHook {
     /**
      * The cheapest channel: a plain JNI property read, no binder call and no
      * Context, so it cannot block the poll thread.
+     *
+     * <p>The {@code Method} and the class are resolved once.  They used to be
+     * looked up on every tick, which meant a classloader search and a reflective
+     * argument-type match 43200 times a day for an answer that never changes.
      */
     private static String readFromProperty() {
         try {
-            Object value = XposedHelpers.callStaticMethod(
-                    XposedHelpers.findClass("android.os.SystemProperties", loader),
-                    "get", PROPERTY_KEY);
+            Method getter = systemPropertiesGet;
+            if (getter == null) {
+                getter = XposedHelpers.findClass("android.os.SystemProperties", loader)
+                        .getMethod("get", String.class);
+                systemPropertiesGet = getter;
+            }
+            Object value = getter.invoke(null, PROPERTY_KEY);
             return value instanceof String ? (String) value : null;
         } catch (Throwable t) {
             return null;
