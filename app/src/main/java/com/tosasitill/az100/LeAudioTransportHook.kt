@@ -2427,6 +2427,10 @@ object LeAudioTransportHook {
     private const val TWIN_COOLDOWN_MS = 60000L
 
     private fun connectTwin(leAudioService: Any?, device: BluetoothDevice) {
+        if (OplusDualModeCoexistHook.shouldYieldLeAudioAutoConnect()) {
+            Logs.trace("lea: twin connect yielded during host hand-over")
+            return
+        }
         val address = addressOf(device)
         if (!matchesAddress(address)) return
         if (IN_TWIN.get() == true) return

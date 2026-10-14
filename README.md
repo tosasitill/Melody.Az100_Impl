@@ -1,6 +1,6 @@
 # Technics EAH-AZ100 适配
 
-LSPosed 模块，当前版本 **1.7.9**（versionCode 32）。它做两件分开的事：
+LSPosed 模块，当前版本 **2.0.3**（versionCode 36）。它做两件分开的事：
 
 - 在 `com.oplus.melody` 里应答音量面板，并用自带的 Airoha SPP/RACE 读写降噪和电量。
 - 在 `com.android.bluetooth` 里让 AZ100 走 LE Audio（LC3），并让系统设置出现 LE Audio 开关。
@@ -106,6 +106,16 @@ OPPO 自家耳机的直连入口是 `OplusDualModeManagerImpl.onRemoteUuidsUpdat
 
 同一地址在上一次直连任务还没执行时不会重复排队。
 
+### 手机 LE Audio 与电脑交接
+
+电脑连接时，耳机仍可能保持手机的 LE ACL；这不代表手机仍拥有媒体流。模块监听 MEDIA 上下文撤回、blocked-media 建议、group 主动停用，以及耳机用 HCI `0x14` 释放 LE 资源。group 释放不再被连接后的 15 秒保护拦住。
+
+确认交接后，模块停止自动升级、补连另一只耳塞和重新激活 group，也取消已排队的输出重设。只有 LE Audio 已在实际播放时，才断开 classic A2DP；退出独占状态只清掉本地标记，不主动重连手机 A2DP。这个状态持续到耳机重新提供 MEDIA 上下文，或用户在手机上明确连接 / 选择 AZ100；不会在 30 秒后自行抢回。
+
+验证：先让手机通过 LE Audio 连接，再在电脑上连接并播放，等待至少 35 秒，确认声音留在电脑；随后在手机上选择耳机，确认 LE Audio 可以恢复。交接后不应有模块发起的 `A2DP reconnect requested` 或 `leaExclusiveOn`。
+
+2026-10-14 的自动化验证覆盖 10 项交接状态测试。2.0.3 已在 OPPO Find X9 上验证：重启后不再因启动保护拆掉 A2DP，电脑可以接管。详情见 `2026-10-14_lea-host-handoff-fix.md`。
+
 ### 设置里的开关
 
 无线设置详情页的开关来自 `com.android.settings.bluetooth.BluetoothDetailsProfilesController`。`LeAudioProfile` 进 `mProfiles` 有两条路：
@@ -138,6 +148,7 @@ OPPO 自家耳机的直连入口是 `OplusDualModeManagerImpl.onRemoteUuidsUpdat
 | `NativeLeaDeviceHook` | 蓝牙 | 打开 native LE Audio 门，停止剥离 UUID |
 | `BassClientFixHook` | 蓝牙 | 修补 BASS 空指针 |
 | `OplusDualModeCoexistHook` | 蓝牙 | 直连 LE Audio，并阻止 classic 抢回 active |
+| `LeaHandoffState` | 蓝牙 | 记录跨主机媒体交接，直到 native MEDIA 返回或手机明确选择 |
 
 `NativeLeaWhitelistHook` 保留但未安装。它写的是地址键，native 门实际按厂商/产品 ID 查，两者对不上。
 

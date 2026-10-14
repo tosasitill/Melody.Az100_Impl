@@ -11,8 +11,8 @@ android {
         applicationId 'com.tosasitill.az100'
         minSdk 29
         targetSdk 35
-        versionCode 33
-        versionName '2.0.0'
+        versionCode 36
+        versionName '2.0.3'
     }
 
     compileOptions {
@@ -45,4 +45,8 @@ dependencies {
     // own API is migrating to -- YukiHookAPI 2.0.0 removes the built-in one.
     implementation 'com.highcapable.kavaref:kavaref-core:1.0.3'
     implementation 'com.highcapable.kavaref:kavaref-extension:1.0.3'
+
+    // Pure-Kotlin protocol/state logic is covered by JVM tests; see
+    // app/src/test/java/com/tosasitill/az100/.  No Android or device needed.
+    testImplementation 'junit:junit:4.13.2'
 }

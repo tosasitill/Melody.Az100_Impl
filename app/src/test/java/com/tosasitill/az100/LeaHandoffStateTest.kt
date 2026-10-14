@@ -1,0 +1,118 @@
+package com.tosasitill.az100
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class LeaHandoffStateTest {
+
+    private val state = LeaHandoffState(30_000L)
+
+    @Test
+    fun initialZeroContextsKeepTheBringUpGuard() {
+        assertEquals(LeaHandoffState.ContextChange.NONE,
+                state.onAvailableContexts(1, 0, 1_000L))
+        assertFalse(state.isYielding(1_038L))
+        assertTrue(state.shouldHoldRelease(1_000L, 1_038L, 15_000L))
+        assertFalse(state.shouldHoldRelease(1_000L, 16_001L, 15_000L))
+        assertFalse(state.shouldHoldRelease(0L, 1_038L, 15_000L))
+    }
+
+    @Test
+    fun computerTakeoverOverridesEvenARecentActivation() {
+        state.onAvailableContexts(1, 0x0fff, 1_000L)
+        assertEquals(LeaHandoffState.ContextChange.YIELDED,
+                state.onAvailableContexts(1, 0, 1_199L))
+        assertTrue(state.isRemoteYielding())
+        assertFalse(state.shouldHoldRelease(1_000L, 1_199L, 15_000L))
+        assertFalse(state.shouldReconnectClassic(1_799L, true))
+        assertFalse(state.shouldReconnectClassic(2_599L, false))
+    }
+
+    @Test
+    fun otherContextsDoNotMaskWithdrawalOfMedia() {
+        state.onAvailableContexts(1, 0x0fff, 1_000L)
+        assertEquals(LeaHandoffState.ContextChange.YIELDED,
+                state.onAvailableContexts(1, 0x0ffb, 2_000L))
+        assertTrue(state.isYielding(2_000L))
+    }
+
+    @Test
+    fun remoteOwnershipSurvivesTheOldThirtySecondTimeout() {
+        state.yieldRemotely(1, 1_000L)
+        state.yieldTemporarily(2_000L)
+        assertTrue(state.isYielding(90_000L))
+        assertFalse(state.shouldReconnectClassic(90_000L, false))
+        assertEquals(LeaHandoffState.ContextChange.NONE,
+                state.onAvailableContexts(2, 0x0fff, 90_001L))
+        assertTrue(state.isRemoteYielding())
+    }
+
+    @Test
+    fun nativeMediaReturnRestoresNormalPhoneBehavior() {
+        state.yieldRemotely(1, 1_000L)
+        assertEquals(LeaHandoffState.ContextChange.NONE,
+                state.onAvailableContexts(1, 0x0002, 90_000L))
+        assertTrue(state.isYielding(90_000L))
+        assertEquals(LeaHandoffState.ContextChange.RESUMED,
+                state.onAvailableContexts(1, 0x0fff, 90_001L))
+        assertFalse(state.isYielding(90_001L))
+        assertTrue(state.shouldReconnectClassic(90_001L, false))
+        assertFalse(state.shouldReconnectClassic(90_001L, true))
+    }
+
+    @Test
+    fun explicitPhoneSelectionClearsOwnershipAndStaleContexts() {
+        state.onAvailableContexts(1, 0x0fff, 1_000L)
+        state.yieldRemotely(1, 2_000L)
+        state.resumeLocally()
+        assertFalse(state.isYielding(2_001L))
+        assertFalse(state.isRemoteYielding())
+        assertEquals(LeaHandoffState.ContextChange.NONE,
+                state.onAvailableContexts(1, 0, 2_002L))
+    }
+
+    @Test
+    fun remoteResourceReleaseDoesNotDialClassicAfterBothEarsDisappear() {
+        state.onAvailableContexts(1, 0x0fff, 1_000L)
+        assertTrue(state.onAclDisconnected(1, 2, 0x14, 20_000L))
+        assertTrue(state.isRemoteYielding())
+        assertFalse(state.shouldReconnectClassic(20_600L, false))
+        assertFalse(state.shouldHoldRelease(1_000L, 20_600L, 15_000L))
+        assertTrue(state.onAclDisconnected(-1, 2, 0x14, 20_115L))
+        assertTrue(state.isYielding(90_000L))
+        assertFalse(state.shouldReconnectClassic(90_000L, false))
+    }
+
+    @Test
+    fun automaticReconnectContextReportCannotCancelResourceRelease() {
+        assertTrue(state.onAclDisconnected(1, 2, 0x14, 20_000L))
+        assertEquals(LeaHandoffState.ContextChange.NONE,
+                state.onAvailableContexts(1, 0x0fff, 20_001L))
+        assertTrue(state.isYielding(90_000L))
+        state.resumeLocally()
+        assertFalse(state.isYielding(90_001L))
+        assertTrue(state.shouldReconnectClassic(90_001L, false))
+        assertEquals(LeaHandoffState.ContextChange.NONE,
+                state.onAvailableContexts(1, 0x0fff, 90_002L))
+    }
+
+    @Test
+    fun ordinaryTimeoutAndLocalDisconnectKeepClassicFallback() {
+        assertFalse(state.onAclDisconnected(1, 1, 0x14, 20_000L))
+        assertFalse(state.onAclDisconnected(1, 2, 0x08, 20_001L))
+        assertFalse(state.onAclDisconnected(1, 2, 0x16, 20_002L))
+        assertFalse(state.isRemoteYielding())
+        assertTrue(state.shouldReconnectClassic(20_600L, false))
+    }
+
+    @Test
+    fun ambiguousApiReleaseOnlyHasABoundedYieldWindow() {
+        state.yieldTemporarily(1_000L)
+        assertTrue(state.isYielding(31_000L))
+        assertFalse(state.isRemoteYielding())
+        assertFalse(state.isYielding(31_001L))
+        assertFalse(state.isYielding(999L))
+    }
+}
