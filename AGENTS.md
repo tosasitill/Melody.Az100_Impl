@@ -25,6 +25,15 @@ Do not broaden LSPosed scope to SystemUI, Device Space, or Technics Audio Connec
 
 Add JVM tests under `app/src/test/java` (named `*Test`) for parsers or state logic. Document device-only checks that cannot be automated.
 
+### Device Validation Restrictions
+
+On 2026-10-14, the user reported a black screen and inability to reboot after an assistant-created temporary `app_process`/DEX AudioTrack test. Do not repeat that testing approach.
+
+- Never create, push, or execute temporary on-device test programs, DEX files, helper APKs, or standalone Java/native probes. In particular, do not use `app_process` or independent AudioTrack/MediaPlayer probes to validate audio.
+- Do not remotely start synthetic audio, test tones, playback, or stress tests on the phone. Audio playback and listening checks must be performed by the user through their normal apps.
+- Keep assistant-driven audio validation to offline JVM tests and read-only inspection of existing device logs and system state. An active route or increasing playback frame count does not prove working audio or device stability.
+- If the user reports a black screen, hang, or failed reboot, stop all device-side testing and record the failure. Do not launch more probes or restart processes to continue validation.
+
 ## Style and Boundaries
 
 Follow the existing Kotlin style targeting JVM 17: four-space indentation, braces on the same line, `UpperCamelCase` class names, `lowerCamelCase` methods, and `UPPER_SNAKE_CASE` constants. Keep package names under `com.tosasitill.az100`; no formatter or linter is configured.
