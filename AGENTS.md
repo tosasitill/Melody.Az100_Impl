@@ -35,6 +35,8 @@ Keep the two runtime boundaries separate. Melody hooks must not depend on the Bl
 
 For static APK/DEX inspection, prefer ASC (`droidasc`); use apktool/jadx for resources or smali and Frida for runtime behavior. Do not scan the whole disk for APKs; the local Audio Connect artifact is `audioconnect-4.4.0.apk` in the repository root.
 
+Never run bulk enumeration — no `find` sweeps over the filesystem, no loops over a class/jar/dex listing, no mass `javap` passes, no whole-corpus greps. Name the one class, method, symbol, or artifact you need and inspect that directly. Bulk scans are slow, noisy, and have twice been the reason a task stalled.
+
 ## Commits and Pull Requests
 
 The Git history uses concise, action-focused summaries (for example, `避免连接期间反复建立 SPP`). Keep changes scoped and describe user-visible behavior, build/test results, and the Android device/ROM plus LSPosed version used for hardware validation. Include screenshots for UI changes and redact Bluetooth addresses or other device-specific data from logs.

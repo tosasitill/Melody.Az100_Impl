@@ -1,20 +1,13 @@
-package com.tosasitill.az100;
+package com.tosasitill.az100
 
-import android.bluetooth.BluetoothDevice;
-import android.os.ParcelUuid;
-import android.os.SystemClock;
-
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-
-import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
-import de.robv.android.xposed.XposedHelpers;
+import android.bluetooth.BluetoothDevice
+import android.os.ParcelUuid
+import android.os.SystemClock
+import com.highcapable.kavaref.KavaRef.Companion.resolve
+import com.highcapable.yukihookapi.hook.param.PackageParam
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * Makes OPPO's "dual mode" policy treat the AZ100 as an LE-Audio-coexistent
@@ -200,37 +193,40 @@ import de.robv.android.xposed.XposedHelpers;
  * Expected: {@code dual-coexist: ... marked LEA-coexistent} and
  * {@code a2dp: ALLOWED} / {@code hfp: ALLOWED} instead of {@code FORBIDDEN}.
  */
-final class OplusDualModeCoexistHook {
+
+object OplusDualModeCoexistHook {
+
 
     /** Flip to false and reinstall to leave the vendor policy alone. */
-    private static final boolean ENABLED = true;
+        private const val ENABLED = true
 
-    private static final String FACTORY =
-            "com.oplus.bluetooth.common.OplusBTFactory";
-    private static final String DUAL_MODE_IMPL =
-            "com.oplus.bluetooth.btservice.OplusDualModeManagerImpl";
-    private static final String LEA_POLICY_EXT =
-            "com.oplus.bluetooth.leaudio.OplusLeAudioPhonePolicyExt";
-    private static final String ADM_EXT_IMPL =
-            "com.oplus.bluetooth.btservice.OplusActiveDeviceManagerExtImpl";
-    private static final String ADAPTER_SERVICE_EXT_IMPL =
-            "com.oplus.bluetooth.btservice.OplusAdapterServiceExtImpl";
-    private static final String LEA_UTILS =
-            "com.oplus.bluetooth.leaudio.OplusLeAudioUtils";
-    private static final String ACTIVE_DEVICE_MANAGER =
-            "com.android.bluetooth.btservice.ActiveDeviceManager";
-    private static final String LE_AUDIO_SERVICE =
-            "com.android.bluetooth.le_audio.LeAudioService";
-    private static final String A2DP_SERVICE =
-            "com.android.bluetooth.a2dp.A2dpService";
-    private static final String VCS_SERVICE =
-            "com.android.bluetooth.vc.VolumeControlService";
-    private static final String ADAPTER_SERVICE =
-            "com.android.bluetooth.btservice.AdapterService";
-    private static final String CONNECTABLE_PROFILE =
-            "com.android.bluetooth.profile.ConnectableProfile";
-    private static final String HEADSET_SERVICE =
-            "com.android.bluetooth.hfp.HeadsetService";
+
+        private const val FACTORY = "com.oplus.bluetooth.common.OplusBTFactory"
+
+        private const val DUAL_MODE_IMPL = "com.oplus.bluetooth.btservice.OplusDualModeManagerImpl"
+
+        private const val LEA_POLICY_EXT = "com.oplus.bluetooth.leaudio.OplusLeAudioPhonePolicyExt"
+
+        private const val ADM_EXT_IMPL = "com.oplus.bluetooth.btservice.OplusActiveDeviceManagerExtImpl"
+
+        private const val ADAPTER_SERVICE_EXT_IMPL = "com.oplus.bluetooth.btservice.OplusAdapterServiceExtImpl"
+
+        private const val LEA_UTILS = "com.oplus.bluetooth.leaudio.OplusLeAudioUtils"
+
+        private const val ACTIVE_DEVICE_MANAGER = "com.android.bluetooth.btservice.ActiveDeviceManager"
+
+        private const val LE_AUDIO_SERVICE = "com.android.bluetooth.le_audio.LeAudioService"
+
+        private const val A2DP_SERVICE = "com.android.bluetooth.a2dp.A2dpService"
+
+        private const val VCS_SERVICE = "com.android.bluetooth.vc.VolumeControlService"
+
+        private const val ADAPTER_SERVICE = "com.android.bluetooth.btservice.AdapterService"
+
+        private const val CONNECTABLE_PROFILE = "com.android.bluetooth.profile.ConnectableProfile"
+
+        private const val HEADSET_SERVICE = "com.android.bluetooth.hfp.HeadsetService"
+
 
     /**
      * {@code A2dpService.connect(BluetoothDevice)} -- the public method, not a
@@ -270,7 +266,8 @@ final class OplusDualModeCoexistHook {
      * the {@code okToConnect} it calls is the very method
      * {@link #hookA2dpActiveGuard} already hooks -- so the two stay consistent.
      */
-    private static final String A2DP_CONNECT = "connect";
+        private const val A2DP_CONNECT = "connect"
+
 
     /**
      * The address whose A2DP this class is holding down for {@code device}.
@@ -314,18 +311,18 @@ final class OplusDualModeCoexistHook {
      * @return the device to reconnect, or {@code null} when no bonded identity of
      *         this earbud advertises A2DP Sink (a genuinely LE-only headset).
      */
-    private static BluetoothDevice a2dpPeerOf(BluetoothDevice device) {
+    private fun a2dpPeerOf(device: BluetoothDevice?): BluetoothDevice? {
         if (device == null) return null;
-        String address = device.getAddress();
+        val address = device.getAddress();
         if (address == null) return null;
-        String cached = A2DP_PEER.get(address);
+        val cached = A2DP_PEER.get(address);
         if (cached != null) return lookupBonded(cached);
 
-        BluetoothDevice peer = device;
+        var peer: BluetoothDevice? = device;
         try {
             if (!advertisesA2dpSink(device)) {
                 peer = null;
-                for (BluetoothDevice bonded : bondedDevices()) {
+                for (bonded in bondedDevices()) {
                     if (bonded == null || bonded.equals(device)) continue;
                     // Same earbud, other identity: the stack reports both under one
                     // name, and this is the only link between the two addresses --
@@ -336,7 +333,7 @@ final class OplusDualModeCoexistHook {
                     break;
                 }
             }
-        } catch (Throwable t) {
+        } catch (t: Throwable) {
             Logs.trace("dual-coexist: A2DP peer lookup failed - " + t);
             return null;
         }
@@ -353,31 +350,36 @@ final class OplusDualModeCoexistHook {
         return peer;
     }
 
+
     /** Does this bonded device advertise the A2DP Sink profile? */
-    private static boolean advertisesA2dpSink(BluetoothDevice device) {
-        ParcelUuid[] uuids = device.getUuids();
+    private fun advertisesA2dpSink(device: BluetoothDevice): Boolean {
+        val uuids = device.getUuids();
         if (uuids == null) return false;
-        for (ParcelUuid uuid : uuids) {
+        for (uuid in uuids) {
             if (uuid != null && A2DP_SINK_UUID.equals(uuid.toString())) return true;
         }
         return false;
     }
 
-    private static boolean sameName(BluetoothDevice a, BluetoothDevice b) {
+
+    private fun sameName(a: BluetoothDevice, b: BluetoothDevice): Boolean {
         try {
-            String name = a.getName();
+            val name = a.getName();
             return name != null && name.equals(b.getName());
-        } catch (Throwable ignored) {
+        } catch (ignored: Throwable) {
             return false;
         }
     }
 
-    private static BluetoothDevice lookupBonded(String address) {
-        for (BluetoothDevice bonded : bondedDevices()) {
-            if (bonded != null && address.equalsIgnoreCase(bonded.getAddress())) return bonded;
+
+    private fun lookupBonded(address: String?): BluetoothDevice? {
+        for (bonded in bondedDevices()) {
+            if (bonded != null && address != null
+                    && address.equals(bonded.getAddress(), ignoreCase = true)) return bonded;
         }
         return null;
     }
+
 
     /**
      * The bonded device set, read through the live {@code AdapterService}.
@@ -388,27 +390,28 @@ final class OplusDualModeCoexistHook {
      * on the same in-process object graph as every other hook here, so it cannot
      * be affected by an adapter that is mid-restart.
      */
-    private static Iterable<BluetoothDevice> bondedDevices() {
-        Object lea = leaServiceRef;
-        if (lea == null) return java.util.Collections.emptyList();
+    private fun bondedDevices(): Iterable<BluetoothDevice> {
+        val lea = leaServiceRef;
+        if (lea == null) return emptyList();
         try {
-            Object adapter = XposedHelpers.callMethod(lea, "getAdapterService");
-            if (adapter == null) return java.util.Collections.emptyList();
-            Object bonded = XposedHelpers.callMethod(adapter, "getBondedDevices");
-            if (bonded instanceof Iterable) {
-                @SuppressWarnings("unchecked")
-                Iterable<BluetoothDevice> devices = (Iterable<BluetoothDevice>) bonded;
+            val adapter = Reflect.callMethod(lea, "getAdapterService");
+            if (adapter == null) return emptyList();
+            val bonded = Reflect.callMethod(adapter, "getBondedDevices");
+            if (bonded is Iterable<*>) {
+                                val devices = (bonded as Iterable<BluetoothDevice>);
                 return devices;
             }
-        } catch (Throwable ignored) {
+        } catch (ignored: Throwable) {
         }
-        return java.util.Collections.emptyList();
+        return emptyList();
     }
+
 
     /**
      * The A2DP Sink profile UUID.
      */
-    private static final String A2DP_SINK_UUID = "0000110b-0000-1000-8000-00805f9b34fb";
+        private const val A2DP_SINK_UUID = "0000110b-0000-1000-8000-00805f9b34fb"
+
 
     /**
      * LE address -&gt; address of the bonded twin that owns A2DP.
@@ -417,7 +420,8 @@ final class OplusDualModeCoexistHook {
      * {@link #a2dpPeerOf}).  Bounded by the bonded device count, and cleared with
      * the rest of the class's state on process restart.
      */
-    private static final Map<String, String> A2DP_PEER = new ConcurrentHashMap<>();
+        private val A2DP_PEER = ConcurrentHashMap<String,String>()
+
 
     /**
      * How long to let an LE Audio activation settle before touching A2DP.
@@ -428,7 +432,8 @@ final class OplusDualModeCoexistHook {
      * the A2DP side is quiet for well over a second after the hand-over
      * (16:42:42.298 was 1.4 s after 16:42:40.899), so deferring costs nothing.
      */
-    private static final long EXCLUSIVE_SETTLE_MS = 600L;
+        private const val EXCLUSIVE_SETTLE_MS = 600L
+
 
     /**
      * How long to wait before re-checking the HFP active slot.
@@ -437,7 +442,8 @@ final class OplusDualModeCoexistHook {
      * in, so a single pass is not enough.  Long enough to be past that, short
      * enough that the user never hears the gap.
      */
-    private static final long HFP_REASSERT_MS = 1400L;
+        private const val HFP_REASSERT_MS = 1400L
+
 
     /**
      * Hand the audio path to LE Audio once it is connected.
@@ -453,7 +459,8 @@ final class OplusDualModeCoexistHook {
      * is what the ROM itself does whenever
      * {@code Utils.isDualModeAudioEnabled()} is {@code false}.
      */
-    private static final boolean LE_AUDIO_TAKES_OVER = true;
+        private const val LE_AUDIO_TAKES_OVER = true
+
 
     /**
      * How long LE Audio is defended after it has been made active.
@@ -470,19 +477,62 @@ final class OplusDualModeCoexistHook {
      * <p>Once both classic profiles are active the ROM keeps LE Audio on its
      * own, so this window only has to cover the hand-over.
      */
-    private static final long LEA_HOLD_WINDOW_MS = 15000L;
+        private const val LEA_HOLD_WINDOW_MS = 15000L
+
+
+    /**
+     * How long the module keeps its hands off after the stack handed the LE Audio
+     * active slot away -- the "yield window".
+     *
+     * <h2>The failure this covers (measured 2026-10-13)</h2>
+     *
+     * <pre>
+     *   22:24:23  vcs: connect(**:**:**84:85) -> true     // LE Audio bring-up
+     *   22:24:25  dual-coexist: groupSwitch.apiRequest    // released, deliberately
+     *   22:24:27  dual-coexist: leaConnectedGate          // LE Audio finished
+     *   22:24:27  dual-coexist: groupActivated=true       // ...and took it back
+     * </pre>
+     *
+     * <p>That last step is the bug: the earbuds were already playing on the
+     * computer, and the module's activation moved the audio back to the phone.
+     * An AZ100 keeps one LE Audio link per host and whoever activates the group
+     * last owns the audio -- {@code setActiveGroupWithDevice()} ends in the native
+     * {@code groupSetAudioResume()} tagged {@code OPLUS_LE_A2DP_COEXIST}, which is
+     * what actually pulls the stream over.
+     *
+     * <p>So once the stack has released the slot by itself -- the deliberate
+     * {@code removeActiveDevice()} behind {@link #IN_REMOVE_ACTIVE}, or an active
+     * group that goes inactive while an AZ100 is still on LE Audio -- the module
+     * stops answering for the user.  While the window is open it skips the
+     * auto-upgrade ({@link #connectLeaNow}), the gate flip
+     * ({@link #hookLeaConnectedGate}), the forced activation
+     * ({@link #hookLeaAudioActiveBypass}) and the exclusive hold.
+     *
+     * Repeated API releases extend the temporary window. Confirmed MEDIA loss,
+     * blocked media, or autonomous inactivation keeps ownership yielded beyond
+     * that window until native MEDIA returns or a local binder selection runs.
+     */
+        private const val LEA_YIELD_WINDOW_MS = 30000L
+
 
     /** Holder of the {@code AdapterService} on each of the two hooked classes. */
-    private static final String ADAPTER_FIELD_ON_LEA_EXT = "mAdapterService";
-    private static final String ADAPTER_FIELD_ON_DUAL_MODE = "mService";
-    private static final String ADAPTER_FIELD_ON_ADM = "mAdapterService";
+        private const val ADAPTER_FIELD_ON_LEA_EXT = "mAdapterService"
 
-    private static final int PROFILE_HFP = 1;
-    private static final int PROFILE_A2DP = 2;
-    private static final int POLICY_ALLOWED = 100;
+        private const val ADAPTER_FIELD_ON_DUAL_MODE = "mService"
+
+        private const val ADAPTER_FIELD_ON_ADM = "mAdapterService"
+
+
+        private const val PROFILE_HFP = 1
+
+        private const val PROFILE_A2DP = 2
+
+        private const val POLICY_ALLOWED = 100
+
 
     /** Addresses already reported, so the hot path never touches the log file. */
-    private static final Set<String> REPORTED = ConcurrentHashMap.newKeySet();
+        private val REPORTED = ConcurrentHashMap.newKeySet<String>()
+
 
     /**
      * {@code setProfileConnectionPolicy} fans out to
@@ -490,7 +540,8 @@ final class OplusDualModeCoexistHook {
      * which calls {@code isSupportDualConnection()} right back.  Without this
      * guard that is unbounded recursion.
      */
-    private static final ThreadLocal<Boolean> IN_FIX = new ThreadLocal<Boolean>();
+        private val IN_FIX = ThreadLocal<Boolean>()
+
 
     /**
      * One handler for the life of the process.  {@code onRemoteUuidsUpdated()}
@@ -498,11 +549,16 @@ final class OplusDualModeCoexistHook {
      * single discovery, so the follow-up connect is posted here and collapsed
      * per address by {@link #LEA_CONNECT_PENDING}.
      */
-    private static final android.os.Handler MAIN =
-            new android.os.Handler(android.os.Looper.getMainLooper());
+        private val MAIN = android.os.Handler(android.os.Looper.getMainLooper())
+
 
     /** Addresses that already have a {@link #connectLeaNow} waiting to run. */
-    private static final Set<String> LEA_CONNECT_PENDING = ConcurrentHashMap.newKeySet();
+        private val LEA_CONNECT_PENDING = ConcurrentHashMap.newKeySet<String>()
+
+    /** Prevent repeated UUID callbacks from starting overlapping LEA connects. */
+        private val LEA_CONNECT_LAST_ATTEMPT = ConcurrentHashMap<String, Long>()
+        private const val LEA_CONNECT_COOLDOWN_MS = 10000L
+
 
     /**
      * Set while {@code LeAudioService.removeActiveDevice()} is on the stack.
@@ -524,14 +580,21 @@ final class OplusDualModeCoexistHook {
      * move audio off the earbud (e.g. to the phone speaker) again.  The marker
      * is consumed -- and cleared -- by the nested call.
      */
-    private static final ThreadLocal<Boolean> IN_REMOVE_ACTIVE = new ThreadLocal<Boolean>();
+        private val IN_REMOVE_ACTIVE = ThreadLocal<Boolean>()
+
 
     /**
      * {@code SystemClock.elapsedRealtime()} of the last successful
      * {@code setLeAudioActiveDevice(device, ...)}.  See
      * {@link #LEA_HOLD_WINDOW_MS}.
      */
-    private static volatile long leaActiveAt;
+        @Volatile private var leaActiveAt: Long = 0L
+
+
+    /** Handoff ownership persists until native MEDIA returns or a local selection. */
+        private val LEA_HANDOFF = LeaHandoffState(LEA_YIELD_WINDOW_MS)
+        private val IN_LOCAL_LEA_SELECTION = ThreadLocal<Boolean>()
+
 
     /**
      * The live {@code LeAudioService}, captured from whichever hook sees it
@@ -540,7 +603,8 @@ final class OplusDualModeCoexistHook {
      * has no direct route to it.  A {@code null} value means "allow" -- the
      * safe default.
      */
-    private static volatile Object leaServiceRef;
+        @Volatile private var leaServiceRef: Any? = null
+
 
     /**
      * AZ100s currently held in LE-Audio-exclusive mode, keyed by address.
@@ -550,7 +614,8 @@ final class OplusDualModeCoexistHook {
      * uses that to keep it down.  It is <em>not</em> a connection policy, so it
      * lives and dies with the Bluetooth process.
      */
-    private static final Map<String, BluetoothDevice> EXCLUSIVE = new ConcurrentHashMap<>();
+        private val EXCLUSIVE = ConcurrentHashMap<String,BluetoothDevice>()
+
 
     /**
      * Addresses whose A2DP reconnect this class has just issued.
@@ -573,137 +638,159 @@ final class OplusDualModeCoexistHook {
      * as the connect call returns, so a user-initiated activation is still
      * refused for as long as LE Audio owns the path.
      */
-    private static final Set<String> RELEASING = ConcurrentHashMap.newKeySet();
+        private val RELEASING = ConcurrentHashMap.newKeySet<String>()
+
 
     /** Set while {@link #doExclusiveExit} is queued, so callers cannot stack. */
-    private static volatile boolean exitScheduled;
+        @Volatile private var exitScheduled: Boolean = false
+
 
     /**
      * Runs the enter/exit work off the Bluetooth service threads.  Single
      * threaded on purpose: enter and exit must not interleave.
      */
-    private static final ScheduledExecutorService DEFERRED =
-            Executors.newSingleThreadScheduledExecutor(runnable -> {
-                Thread thread = new Thread(runnable, "az100-lea-exclusive");
-                thread.setDaemon(true);
-                return thread;
-            });
+        private val DEFERRED = Executors.newSingleThreadScheduledExecutor { runnable ->
+            val thread = Thread(runnable, "az100-lea-exclusive")
+            thread.isDaemon = true
+            thread
+        }
 
-    private static volatile ClassLoader loader;
-    private static volatile boolean factoryHooked;
-    private static volatile boolean extHooked;
-    private static volatile boolean leaHooked;
 
-    private OplusDualModeCoexistHook() {
-    }
+        @Volatile private var loader: ClassLoader? = null
+
+        @Volatile private var factoryHooked: Boolean = false
+
+        @Volatile private var extHooked: Boolean = false
+
+        @Volatile private var leaHooked: Boolean = false
+
 
     /** Guarded so a repeated {@code install()} cannot stack duplicate hooks. */
-    private static boolean nullGuardHooked;
+        private var nullGuardHooked: Boolean = false
 
-    static void install(ClassLoader classLoader) {
+
+    fun install(param: PackageParam) {
         if (!ENABLED) return;
+        val classLoader = param.appClassLoader ?: return;
         loader = classLoader;
 
-        synchronized (OplusDualModeCoexistHook.class) {
+        synchronized (OplusDualModeCoexistHook::class.java) {
             if (!factoryHooked) {
                 factoryHooked = true;
                 try {
-                    Class<?> factory = XposedHelpers.findClass(FACTORY, classLoader);
-                    XposedHelpers.findAndHookMethod(factory, "newInstance",
-                            String.class, String.class, new XC_MethodHook() {
-                                @Override protected void afterHookedMethod(MethodHookParam param) {
-                                    installExtHooks();
-                                }
-                            });
-                } catch (Throwable t) {
+                    val factory = Reflect.findClass(FACTORY, classLoader);
+                    with(param) {
+                        factory.resolve().optional(silent = true).firstMethod {
+                            name = "newInstance"
+                            parameters(String::class.java, String::class.java)
+                        }.hook {
+                            after { installExtHooks(param); }
+                        }
+                    }
+                } catch (t: Throwable) {
                     Logs.e("dual-coexist: OplusBTFactory hook failed", t);
                 }
             }
         }
         // Harmless if the dex has not been attached yet -- it just retries.
-        installExtHooks();
+        installExtHooks(param);
 
         // These live in Bluetooth.apk itself, so they can go in immediately.
         // Guarded so a repeated install() cannot stack a duplicate set of hooks
         // on the same methods -- Xposed would happily run both copies.
-        synchronized (OplusDualModeCoexistHook.class) {
+        synchronized (OplusDualModeCoexistHook::class.java) {
             if (LE_AUDIO_TAKES_OVER && !leaHooked) {
                 leaHooked = true;
-                hookLeAudioActiveBypass(classLoader);
-                hookGroupAvailableForStream(classLoader);
-                hookA2dpActiveGuard(classLoader);
-                hookLeaConnectedUnstick(classLoader);
+                hookLeaHandoffSignals(param);
+                hookLeaAclRelease(param);
+                hookLeAudioActiveBypass(param);
+                hookGroupAvailableForStream(param);
+                hookA2dpActiveGuard(param);
+                hookLeaConnectedUnstick(param);
             }
             // Not behind LE_AUDIO_TAKES_OVER: this one protects the process from
             // a ROM crash that has nothing to do with which audio path won.
             if (!nullGuardHooked) {
                 nullGuardHooked = true;
-                hookNullDeviceProfileQuery(classLoader);
+                hookNullDeviceProfileQuery(param);
             }
         }
     }
+
 
     /**
      * Resolves and hooks the two vendor classes.  Returns quietly while the
      * extension dex is still unattached; {@code OplusBTFactory.newInstance}
      * calls this again once {@code addDexPath()} has run.
      */
-    private static void installExtHooks() {
-        synchronized (OplusDualModeCoexistHook.class) {
+    private fun installExtHooks(param: PackageParam) {
+        synchronized (OplusDualModeCoexistHook::class.java) {
             if (extHooked) return;
-            ClassLoader cl = loader;
+            val cl = loader;
             if (cl == null) return;
-            Class<?> impl;
-            Class<?> leaExt;
-            try {
-                impl = XposedHelpers.findClass(DUAL_MODE_IMPL, cl);
-                leaExt = XposedHelpers.findClass(LEA_POLICY_EXT, cl);
-            } catch (Throwable t) {
-                return;
+            val impl = try {
+                Reflect.findClass(DUAL_MODE_IMPL, cl)
+            } catch (t: Throwable) {
+                return
             }
-            hookIsSupportDualConnection(impl);
-            hookIsDualConnectionNeeded(impl);
-            hookDirectLeaConnect(impl);
-            hookLeaInitPriorities(leaExt);
-            hookEarbudsMultiConn(impl);
-            hookVendorTeardownPaths(cl);
+            val leaExt = try {
+                Reflect.findClass(LEA_POLICY_EXT, cl)
+            } catch (t: Throwable) {
+                return
+            }
+            hookIsSupportDualConnection(param, impl);
+            hookIsDualConnectionNeeded(param, impl);
+            hookDirectLeaConnect(param, impl);
+            hookLeaInitPriorities(param, leaExt);
+            hookEarbudsMultiConn(param, impl);
+            hookVendorTeardownPaths(param, cl);
             if (LE_AUDIO_TAKES_OVER) {
                 try {
-                    hookLeaConnectedGate(XposedHelpers.findClass(ADM_EXT_IMPL, cl));
-                } catch (Throwable t) {
+                    hookLeaConnectedGate(param, Reflect.findClass(ADM_EXT_IMPL, cl));
+                } catch (t: Throwable) {
                     Logs.e("dual-coexist: ActiveDeviceManagerExt not found", t);
                 }
-                hookClassicReleaseOnLeaActive(cl);
-                hookHfpActiveGuard(cl);
+                hookClassicReleaseOnLeaActive(param, cl);
+                hookHfpActiveGuard(param, cl);
             }
             extHooked = true;
             Logs.trace("dual-coexist: vendor hooks installed");
         }
     }
 
+
     /* ------------------------------------------------------------------ */
     /* 1. stop the vendor code from forbidding classic audio               */
     /* ------------------------------------------------------------------ */
 
-    private static void hookIsSupportDualConnection(Class<?> impl) {
+    private fun hookIsSupportDualConnection(param: PackageParam, impl: Class<*>) {
         try {
-            XposedHelpers.findAndHookMethod(impl, "isSupportDualConnection",
-                    BluetoothDevice.class, new XC_MethodHook() {
-                        @Override protected void afterHookedMethod(MethodHookParam param) {
-                            if (!(param.args[0] instanceof BluetoothDevice)) return;
-                            BluetoothDevice device = (BluetoothDevice) param.args[0];
-                            if (!isAz100(device)) return;
-                            if (Boolean.TRUE.equals(param.getResult())) return;
-                            param.setResult(Boolean.TRUE);
-                            note(device, "supportDualConnection");
-                            ensureClassicAllowed(param.thisObject,
-                                    ADAPTER_FIELD_ON_DUAL_MODE, device);
-                        }
-                    });
-        } catch (Throwable t) {
+            with(param) {
+                impl.resolve().optional(silent = true).firstMethod {
+                    name = "isSupportDualConnection"
+                    parameters(BluetoothDevice::class.java)
+                }.hook {
+                    after {
+                        if (args[0] !is BluetoothDevice) return@after;
+                        val device = (args[0] as BluetoothDevice);
+                        if (!isAz100(device)) return@after;
+                        // Standing aside: a hand-over needs the stock answer, not
+                        // the module insisting the device is dual-connectable.
+                        // See LEA_YIELD_WINDOW_MS.
+                        if (inLeaYieldWindow()) return@after;
+                        if (result == true) return@after;
+                        result = true;
+                        note(device, "supportDualConnection");
+                        ensureClassicAllowed(instanceOrNull,
+                                ADAPTER_FIELD_ON_DUAL_MODE, device);
+                    }
+                }
+            }
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: isSupportDualConnection hook failed", t);
         }
     }
+
 
     /* ------------------------------------------------------------------ */
     /* 2. select the vendor's "dual connection" mode, which is the only     */
@@ -735,85 +822,128 @@ final class OplusDualModeCoexistHook {
      * connected is left alone, and the call is posted off this binder thread so
      * it cannot re-enter the UUID callback that invoked it.
      */
-    private static void hookDirectLeaConnect(final Class<?> impl) {
+    private fun hookDirectLeaConnect(param: PackageParam, impl: Class<*>) {
         try {
-            XposedHelpers.findAndHookMethod(impl, "onRemoteUuidsUpdated",
-                    BluetoothDevice.class, new XC_MethodHook() {
-                        @Override protected void afterHookedMethod(MethodHookParam param) {
-                            if (!(param.args[0] instanceof BluetoothDevice)) return;
-                            final BluetoothDevice device = (BluetoothDevice) param.args[0];
-                            if (!isAz100(device)) return;
-                            final String address = device.getAddress();
-                            if (address == null || !LEA_CONNECT_PENDING.add(address)) return;
-                            final Object self = param.thisObject;
-                            MAIN.post(new Runnable() {
-                                @Override public void run() {
-                                    LEA_CONNECT_PENDING.remove(address);
-                                    connectLeaNow(impl, self, device);
-                                }
-                            });
-                        }
-                    });
+            with(param) {
+                impl.resolve().optional(silent = true).firstMethod {
+                    name = "onRemoteUuidsUpdated"
+                    parameters(BluetoothDevice::class.java)
+                }.hook {
+                    after {
+                        if (args[0] !is BluetoothDevice) return@after;
+                        val device = (args[0] as BluetoothDevice);
+                        if (!isAz100(device)) return@after;
+                        val address = device.getAddress();
+                        if (address == null || !LEA_CONNECT_PENDING.add(address)) return@after;
+                        val self = instanceOrNull;
+                        MAIN.post(object : Runnable {
+                            override fun run() {
+                                LEA_CONNECT_PENDING.remove(address);
+                                connectLeaNow(impl, self, device);
+                            }
+                        });
+                    }
+                }
+            }
             Logs.trace("dual-coexist: direct LEA connect armed");
-        } catch (Throwable t) {
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: direct LEA connect hook failed", t);
         }
     }
+
 
     /**
      * The tail of {@code OplusDualModeManagerImpl.onRemoteUuidsUpdated()}, run
      * for the AZ100 whether or not it was pending.  Both calls are the vendor's
      * own; this only removes the preference-change gate in front of them.
      */
-    private static void connectLeaNow(Class<?> impl, Object self, BluetoothDevice device) {
+    private fun connectLeaNow(impl: Class<*>, self: Any?, device: BluetoothDevice) {
         try {
             // The settings page's master switch.  Off means this module never
             // forces the upgrade; the system's own LE Audio switch still decides
             // whether the profile may be used at all.
-            if (!Prefs.autoLea()) {
+            if (!Prefs.autoLea) {
                 noteOnce("leaAutoConnectDisabledBySetting@" + device.getAddress());
                 return;
             }
-            Object service = XposedHelpers.getObjectField(self, ADAPTER_FIELD_ON_DUAL_MODE);
+            // The stack has just handed the active slot away, so this is not a
+            // fresh connection to upgrade -- it is the callback that would drag
+            // the earbud off the other host.  See LEA_YIELD_WINDOW_MS.
+            if (inLeaYieldWindow()) {
+                noteOnce("leaAutoConnectYielded@" + device.getAddress());
+                return;
+            }
+            val service = Reflect.getObjectField(self, ADAPTER_FIELD_ON_DUAL_MODE);
             if (service == null) return;
-            Object lea = XposedHelpers.callMethod(
-                    XposedHelpers.callMethod(service, "getLeAudioService"), "orElse", (Object) null);
+            // `Optional.orElse(null)`.  The null cannot be used to derive a
+            // signature: it also matches `orElseGet(Supplier)`, and the two are
+            // equally cheap once the argument type is unknown.
+            val optional = Reflect.callMethod(service, "getLeAudioService");
+            val lea = Reflect.callMethod(
+                optional, "orElse", arrayOf<Class<*>>(Any::class.java), null
+            );
             if (lea == null) return;
-            Object state = XposedHelpers.callMethod(lea, "getConnectionState", device);
-            if (state instanceof Integer && ((Integer) state).intValue() == 2) return;
+            val state = Reflect.callMethod(lea, "getConnectionState", device);
+            val address = device.getAddress() ?: return;
+            val now = SystemClock.elapsedRealtime();
+            val previous = LEA_CONNECT_LAST_ATTEMPT[address];
+            val connectionState = state as? Int;
+            if (!LeaConnectGate.shouldStart(
+                    connectionState, previous, now, LEA_CONNECT_COOLDOWN_MS)) {
+                if (connectionState != 0) {
+                    noteOnce("directLeaConnectSkippedState=" + connectionState);
+                } else {
+                    noteOnce("directLeaConnectCooldown@" + address);
+                }
+                return;
+            }
 
-            XposedHelpers.callMethod(self, "setLeAudioGroupEnabled", device, Boolean.TRUE);
+            Reflect.callMethod(self, "setLeAudioGroupEnabled", device, true);
 
-            Class<?> leaExt = XposedHelpers.findClass(LEA_POLICY_EXT, impl.getClassLoader());
-            Object policy = XposedHelpers.getStaticObjectField(leaExt, "sInstance");
+            val leaExt = Reflect.findClass(LEA_POLICY_EXT, impl.getClassLoader());
+            val policy = Reflect.getStaticObjectField(leaExt, "sInstance");
             if (policy == null) {
                 Logs.trace("dual-coexist: direct LEA connect skipped, policy not up yet");
                 return;
             }
-            XposedHelpers.callMethod(policy, "connectLeAudio", device);
+            LEA_CONNECT_LAST_ATTEMPT[address] = now;
+            Reflect.callMethod(policy, "connectLeAudio", device);
             note(device, "directLeaConnect");
-        } catch (Throwable t) {
+        } catch (t: Throwable) {
             Logs.d("dual-coexist: direct LEA connect failed", t);
         }
     }
 
-    private static void hookIsDualConnectionNeeded(Class<?> impl) {
+    /** Also gates the sibling auto-connect path during a host hand-over. */
+    fun shouldYieldLeAudioAutoConnect(): Boolean = inLeaYieldWindow()
+
+
+    private fun hookIsDualConnectionNeeded(param: PackageParam, impl: Class<*>) {
         try {
-            XposedHelpers.findAndHookMethod(impl, "isDualConnectionNeeded",
-                    BluetoothDevice.class, new XC_MethodHook() {
-                        @Override protected void afterHookedMethod(MethodHookParam param) {
-                            if (!(param.args[0] instanceof BluetoothDevice)) return;
-                            BluetoothDevice device = (BluetoothDevice) param.args[0];
-                            if (!isAz100(device)) return;
-                            if (Boolean.TRUE.equals(param.getResult())) return;
-                            param.setResult(Boolean.TRUE);
-                            note(device, "dualConnectionNeeded");
-                        }
-                    });
-        } catch (Throwable t) {
+            with(param) {
+                impl.resolve().optional(silent = true).firstMethod {
+                    name = "isDualConnectionNeeded"
+                    parameters(BluetoothDevice::class.java)
+                }.hook {
+                    after {
+                        if (args[0] !is BluetoothDevice) return@after;
+                        val device = (args[0] as BluetoothDevice);
+                        if (!isAz100(device)) return@after;
+                        // Standing aside: don't force the twin link up while the
+                        // phone is handing the earbud to another host.
+                        // See LEA_YIELD_WINDOW_MS.
+                        if (inLeaYieldWindow()) return@after;
+                        if (result == true) return@after;
+                        result = true;
+                        note(device, "dualConnectionNeeded");
+                    }
+                }
+            }
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: isDualConnectionNeeded hook failed", t);
         }
     }
+
 
     /* ------------------------------------------------------------------ */
     /* 3. un-stick the already-forbidden policies                          */
@@ -824,23 +954,30 @@ final class OplusDualModeCoexistHook {
      * the two policies are back at {@code 100} by the time the
      * {@code (!hfpAllowed &amp;&amp; !a2dpAllowed)} bail-out is evaluated.
      */
-    private static void hookLeaInitPriorities(Class<?> leaExt) {
+    private fun hookLeaInitPriorities(param: PackageParam, leaExt: Class<*>) {
         try {
-            XposedHelpers.findAndHookMethod(leaExt, "oplusInitProfilePriorities",
-                    boolean.class, BluetoothDevice.class, ParcelUuid[].class,
-                    new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            if (!(param.args[1] instanceof BluetoothDevice)) return;
-                            BluetoothDevice device = (BluetoothDevice) param.args[1];
-                            if (!isAz100(device)) return;
-                            ensureClassicAllowed(param.thisObject,
-                                    ADAPTER_FIELD_ON_LEA_EXT, device);
-                        }
-                    });
-        } catch (Throwable t) {
+            with(param) {
+                leaExt.resolve().optional(silent = true).firstMethod {
+                    name = "oplusInitProfilePriorities"
+                    parameters(
+                        java.lang.Boolean.TYPE, BluetoothDevice::class.java,
+                        Array<ParcelUuid>::class.java
+                    )
+                }.hook {
+                    before {
+                        if (args[1] !is BluetoothDevice) return@before;
+                        val device = (args[1] as BluetoothDevice);
+                        if (!isAz100(device)) return@before;
+                        ensureClassicAllowed(instanceOrNull,
+                                ADAPTER_FIELD_ON_LEA_EXT, device);
+                    }
+                }
+            }
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: oplusInitProfilePriorities hook failed", t);
         }
     }
+
 
     /* ------------------------------------------------------------------ */
     /* 3b. ignore the phantom "earbuds are busy elsewhere" report          */
@@ -884,33 +1021,43 @@ final class OplusDualModeCoexistHook {
      * manages its own second link, and classic audio remains connected
      * underneath as a fallback either way.
      */
-    private static void hookEarbudsMultiConn(Class<?> impl) {
+    private fun hookEarbudsMultiConn(param: PackageParam, impl: Class<*>) {
         try {
-            XposedHelpers.findAndHookMethod(impl, "handleEarbudsMultiConnOccupied",
-                    BluetoothDevice.class, int.class, new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            if (!isAz100Arg(param.args[0])) return;
-                            param.setResult(null);
-                            noteOnce("earbudsMultiConnOccupiedSkipped");
-                        }
-                    });
-        } catch (Throwable t) {
+            with(param) {
+                impl.resolve().optional(silent = true).firstMethod {
+                    name = "handleEarbudsMultiConnOccupied"
+                    parameters(BluetoothDevice::class.java, Integer.TYPE)
+                }.hook {
+                    before {
+                        if (!isAz100Arg(args[0])) return@before;
+                        result = null;
+                        noteOnce("earbudsMultiConnOccupiedSkipped");
+                    }
+                }
+            }
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: handleEarbudsMultiConnOccupied hook failed", t);
         }
         try {
-            XposedHelpers.findAndHookMethod(impl, "onEarbudsMultiConnStatusChanged",
-                    BluetoothDevice.class, int.class, boolean.class,
-                    new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            if (!isAz100Arg(param.args[0])) return;
-                            param.setResult(null);
-                            noteOnce("earbudsMultiConnStatusIgnored");
-                        }
-                    });
-        } catch (Throwable t) {
+            with(param) {
+                impl.resolve().optional(silent = true).firstMethod {
+                    name = "onEarbudsMultiConnStatusChanged"
+                    parameters(
+                        BluetoothDevice::class.java, Integer.TYPE, java.lang.Boolean.TYPE
+                    )
+                }.hook {
+                    before {
+                        if (!isAz100Arg(args[0])) return@before;
+                        result = null;
+                        noteOnce("earbudsMultiConnStatusIgnored");
+                    }
+                }
+            }
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: onEarbudsMultiConnStatusChanged hook failed", t);
         }
     }
+
 
     /* ------------------------------------------------------------------ */
     /* 3c. the remaining vendor paths that revoke LE Audio                 */
@@ -948,85 +1095,120 @@ final class OplusDualModeCoexistHook {
      *       property cannot silently start tearing LE Audio down.</dd>
      * </dl>
      */
-    private static void hookVendorTeardownPaths(ClassLoader cl) {
+    private fun hookVendorTeardownPaths(param: PackageParam, cl: ClassLoader) {
         try {
-            Class<?> adapterExt = XposedHelpers.findClass(ADAPTER_SERVICE_EXT_IMPL, cl);
-            XposedHelpers.findAndHookMethod(adapterExt, "disableLeAudioProfiles",
-                    BluetoothDevice.class, new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            if (!isAz100Arg(param.args[0])) return;
-                            param.setResult(null);
-                            noteOnce("disableLeAudioProfilesSkipped");
-                        }
-                    });
-        } catch (Throwable t) {
+            val adapterExt = Reflect.findClass(ADAPTER_SERVICE_EXT_IMPL, cl);
+            with(param) {
+                adapterExt.resolve().optional(silent = true).firstMethod {
+                    name = "disableLeAudioProfiles"
+                    parameters(BluetoothDevice::class.java)
+                }.hook {
+                    before {
+                        if (!isAz100Arg(args[0])) return@before;
+                        // Standing aside: don't block the vendor's own teardown
+                        // during a hand-over.  See LEA_YIELD_WINDOW_MS.
+                        if (inLeaYieldWindow()) return@before;
+                        result = null;
+                        noteOnce("disableLeAudioProfilesSkipped");
+                    }
+                }
+            }
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: disableLeAudioProfiles hook failed", t);
         }
 
         try {
-            Class<?> admExt = XposedHelpers.findClass(ADM_EXT_IMPL, cl);
-            XposedHelpers.findAndHookMethod(admExt, "disableLeAudioProfiles",
-                    BluetoothDevice.class, new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            if (!isAz100Arg(param.args[0])) return;
-                            param.setResult(null);
-                            noteOnce("admDisableLeAudioProfilesSkipped");
-                        }
-                    });
-        } catch (Throwable t) {
+            val admExt = Reflect.findClass(ADM_EXT_IMPL, cl);
+            with(param) {
+                admExt.resolve().optional(silent = true).firstMethod {
+                    name = "disableLeAudioProfiles"
+                    parameters(BluetoothDevice::class.java)
+                }.hook {
+                    before {
+                        if (!isAz100Arg(args[0])) return@before;
+                        if (inLeaYieldWindow()) return@before;
+                        result = null;
+                        noteOnce("admDisableLeAudioProfilesSkipped");
+                    }
+                }
+            }
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: adm disableLeAudioProfiles hook failed", t);
         }
 
         try {
-            Class<?> leaUtils = XposedHelpers.findClass(LEA_UTILS, cl);
-            XposedHelpers.findAndHookMethod(leaUtils, "oplusDisableProfiles",
-                    String.class, BluetoothDevice.class, new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            if (!isAz100Arg(param.args[1])) return;
-                            param.setResult(null);
-                            noteOnce("oplusDisableProfilesSkipped");
-                        }
-                    });
-        } catch (Throwable t) {
+            val leaUtils = Reflect.findClass(LEA_UTILS, cl);
+            with(param) {
+                leaUtils.resolve().optional(silent = true).firstMethod {
+                    name = "oplusDisableProfiles"
+                    parameters(String::class.java, BluetoothDevice::class.java)
+                }.hook {
+                    before {
+                        if (!isAz100Arg(args[1])) return@before;
+                        if (inLeaYieldWindow()) return@before;
+                        result = null;
+                        noteOnce("oplusDisableProfilesSkipped");
+                    }
+                }
+            }
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: oplusDisableProfiles hook failed", t);
         }
 
         try {
-            Class<?> impl = XposedHelpers.findClass(DUAL_MODE_IMPL, cl);
-            Class<?> leaService = XposedHelpers.findClass(LE_AUDIO_SERVICE, cl);
-            XposedHelpers.findAndHookMethod(impl, "disconnectLeaGroupForPreference",
-                    BluetoothDevice.class, leaService, new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            if (!isAz100Arg(param.args[0])) return;
-                            param.setResult(null);
-                            noteOnce("disconnectLeaGroupForPreferenceSkipped");
-                        }
-                    });
-        } catch (Throwable t) {
+            val impl = Reflect.findClass(DUAL_MODE_IMPL, cl);
+            val leaService = Reflect.findClass(LE_AUDIO_SERVICE, cl);
+            with(param) {
+                impl.resolve().optional(silent = true).firstMethod {
+                    name = "disconnectLeaGroupForPreference"
+                    parameters(BluetoothDevice::class.java, leaService)
+                }.hook {
+                    before {
+                        if (!isAz100Arg(args[0])) return@before;
+                        if (inLeaYieldWindow()) return@before;
+                        result = null;
+                        noteOnce("disconnectLeaGroupForPreferenceSkipped");
+                    }
+                }
+            }
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: disconnectLeaGroupForPreference hook failed", t);
         }
     }
+
 
     /* ------------------------------------------------------------------ */
     /* 4. let LE Audio become the active audio path                        */
     /* ------------------------------------------------------------------ */
 
-    private static void hookLeaConnectedGate(Class<?> admExt) {
+    private fun hookLeaConnectedGate(param: PackageParam, admExt: Class<*>) {
         try {
-            XposedHelpers.findAndHookMethod(admExt, "oplusHandleLeaConnected",
-                    BluetoothDevice.class, new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            if (!(param.args[0] instanceof BluetoothDevice)) return;
-                            BluetoothDevice device = (BluetoothDevice) param.args[0];
-                            if (!isAz100(device)) return;
-                            param.setResult(Boolean.TRUE);
-                            note(device, "leaConnectedGate");
+            with(param) {
+                admExt.resolve().optional(silent = true).firstMethod {
+                    name = "oplusHandleLeaConnected"
+                    parameters(BluetoothDevice::class.java)
+                }.hook {
+                    before {
+                        if (args[0] !is BluetoothDevice) return@before;
+                        val device = (args[0] as BluetoothDevice);
+                        if (!isAz100(device)) return@before;
+                        // The phone has handed the slot away: let the stock answer
+                        // (false) stand, so this connection does not become the
+                        // active path.  See LEA_YIELD_WINDOW_MS.
+                        if (inLeaYieldWindow()) {
+                            noteOnce("leaConnectedGateYielded");
+                            return@before;
                         }
-                    });
-        } catch (Throwable t) {
+                        result = true;
+                        note(device, "leaConnectedGate");
+                    }
+                }
+            }
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: oplusHandleLeaConnected hook failed", t);
         }
     }
+
 
     /**
      * Keeps LE Audio as the active path once it has been made active.
@@ -1081,120 +1263,138 @@ final class OplusDualModeCoexistHook {
      * above), which is why the guard is time-boxed rather than permanent -- a
      * deliberate switch to the phone speaker later on still works.
      */
-    private static void hookClassicReleaseOnLeaActive(ClassLoader cl) {
+    private fun hookClassicReleaseOnLeaActive(param: PackageParam, cl: ClassLoader) {
         try {
-            Class<?> adm = XposedHelpers.findClass(ACTIVE_DEVICE_MANAGER, cl);
+            val adm = Reflect.findClass(ACTIVE_DEVICE_MANAGER, cl);
 
-            XposedHelpers.findAndHookMethod(adm, "setLeAudioActiveDevice",
-                    BluetoothDevice.class, boolean.class, new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            // Only revokes (device == null) are guarded; handing the
-                            // slot to a real device always runs the original code.
-                            if (param.args[0] instanceof BluetoothDevice) return;
-                            if (SystemClock.elapsedRealtime() - leaActiveAt
-                                    > LEA_HOLD_WINDOW_MS) {
-                                return;
-                            }
-                            if (!leaGroupHasAz100(param.thisObject)) return;
-                            param.setResult(Boolean.TRUE);
-                            noteOnce("leaReleaseHeld");
+            with(param) {
+                adm.resolve().optional(silent = true).firstMethod {
+                    name = "setLeAudioActiveDevice"
+                    parameters(BluetoothDevice::class.java, java.lang.Boolean.TYPE)
+                }.hook {
+                    before {
+                        // Only revokes (device == null) are guarded; handing the
+                        // slot to a real device always runs the original code.
+                        if (args[0] is BluetoothDevice) return@before;
+                        // The window wins over the hold: once the module has stood
+                        // aside, a release is exactly what should happen.
+                        if (inLeaYieldWindow()) return@before;
+                        if (SystemClock.elapsedRealtime() - leaActiveAt
+                                > LEA_HOLD_WINDOW_MS) {
+                            return@before;
                         }
+                        if (!leaGroupHasAz100(instanceOrNull)) return@before;
+                        result = true;
+                        noteOnce("leaReleaseHeld");
+                    }
 
-                        @Override protected void afterHookedMethod(MethodHookParam param) {
-                            if (!(param.args[0] instanceof BluetoothDevice)) return;
-                            BluetoothDevice device = (BluetoothDevice) param.args[0];
-                            if (!isAz100(device)) return;
-                            if (!Boolean.TRUE.equals(param.getResult())) return;
-                            leaActiveAt = SystemClock.elapsedRealtime();
-                            note(device, "leAudioActive");
-                        }
-                    });
+                    after {
+                        if (args[0] !is BluetoothDevice) return@after;
+                        val device = (args[0] as BluetoothDevice);
+                        if (!isAz100(device)) return@after;
+                        if (result != true) return@after;
+                        leaActiveAt = SystemClock.elapsedRealtime();
+                        note(device, "leAudioActive");
+                    }
+                }
 
-            // The dual-mode sync drops LE Audio whenever the classic profiles
-            // are not all active yet.  For an AZ100 member there is nothing to
-            // sync -- the two links belong to the same earbud pair.
-            XposedHelpers.findAndHookMethod(adm, "updateLeAudioActiveDeviceIfDualMode",
-                    BluetoothDevice.class, BluetoothDevice.class, new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            // args[0] is the previous classic active device,
-                            // args[1] the one taking over.  Only skip when the
-                            // AZ100 is the device being handed the slot, or when
-                            // the slot is being vacated altogether with an AZ100
-                            // holding it.  A *different* non-null device (a car
-                            // kit, another headset) must still run the original
-                            // sync, otherwise LE Audio would never be released
-                            // for it.
-                            boolean az100TakesSlot = isAz100Arg(param.args[1]);
-                            boolean az100SlotVacated =
-                                    param.args[1] == null && isAz100Arg(param.args[0]);
-                            if (!az100TakesSlot && !az100SlotVacated) return;
-                            param.setResult(null);
-                            noteOnce("dualModeSyncSkipped");
-                        }
-                    });
+                // The dual-mode sync drops LE Audio whenever the classic profiles
+                // are not all active yet.  For an AZ100 member there is nothing to
+                // sync -- the two links belong to the same earbud pair.
+                adm.resolve().optional(silent = true).firstMethod {
+                    name = "updateLeAudioActiveDeviceIfDualMode"
+                    parameters(BluetoothDevice::class.java, BluetoothDevice::class.java)
+                }.hook {
+                    before {
+                        // Standing aside: let the ROM's own dual-mode sync run
+                        // instead of skipping it.
+                        if (inLeaYieldWindow()) return@before;
+                        // args[0] is the previous classic active device,
+                        // args[1] the one taking over.  Only skip when the
+                        // AZ100 is the device being handed the slot, or when
+                        // the slot is being vacated altogether with an AZ100
+                        // holding it.  A *different* non-null device (a car
+                        // kit, another headset) must still run the original
+                        // sync, otherwise LE Audio would never be released
+                        // for it.
+                        val az100TakesSlot = isAz100Arg(args[1]);
+                        val az100SlotVacated = args[1] == null && isAz100Arg(args[0]);
+                        if (!az100TakesSlot && !az100SlotVacated) return@before;
+                        result = null;
+                        noteOnce("dualModeSyncSkipped");
+                    }
+                }
 
-            // Once LE Audio is the active path, A2DP must not take it back.
-            //
-            // Both links stay connected here (dual mode), and the audio policy
-            // engine hands the media strategies to whichever of the two is
-            // *active* -- there is no preferred device of its own:
-            //
-            //   Preferred devices for strategy:          (empty)
-            //   Applied devices roles for strategies (internal):
-            //     strategy: 0 role:2 devices:[... type:bt_a2dp ...]   <- media
-            //
-            // Measured on device, A2DP re-activated itself 1.4 s after the
-            // hand-over and took every strategy back:
-            //
-            //   16:42:40.899 LeAudioService -&gt; AudioManager:
-            //                mActiveAudioOutDevice: 84:85 isLeOutput: true
-            //   16:42:41.465 BluetoothActiveDeviceChanged for A2DP, 84:85 -&gt; null
-            //   16:42:42.298 handleA2dpActiveDeviceChanged: 84:85, mA2dpActiveDevice=null
-            //   16:42:43     dumpsys audio: strategy 0..11 -&gt; type:bt_a2dp
-            //
-            // That leaves silence on both paths: the earbud tears the classic
-            // link down once the LE Audio CIS is up (16:42:41.634
-            // {@code prof=2 state=0}), and the media strategies still point at
-            // the A2DP device that no longer carries anything.
-            //
-            // So: refuse an A2DP *activation* while LE Audio is the active path
-            // for the same earbud.  Deactivations ({@code device == null}) and
-            // every device that is not an AZ100 pass straight through, so a
-            // genuine fallback to classic audio still works once the LE Audio
-            // group goes inactive.
-            XposedHelpers.findAndHookMethod(adm, "setA2dpActiveDevice",
-                    BluetoothDevice.class, boolean.class, new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            if (!isAz100Arg(param.args[0])) return;
-                            if (!leaGroupHasAz100(param.thisObject)) return;
-                            param.setResult(Boolean.FALSE);
-                            noteOnce("a2dpReactivationRefused");
-                        }
-                    });
+                // Once LE Audio is the active path, A2DP must not take it back.
+                //
+                // Both links stay connected here (dual mode), and the audio policy
+                // engine hands the media strategies to whichever of the two is
+                // *active* -- there is no preferred device of its own:
+                //
+                //   Preferred devices for strategy:          (empty)
+                //   Applied devices roles for strategies (internal):
+                //     strategy: 0 role:2 devices:[... type:bt_a2dp ...]   <- media
+                //
+                // Measured on device, A2DP re-activated itself 1.4 s after the
+                // hand-over and took every strategy back:
+                //
+                //   16:42:40.899 LeAudioService -&gt; AudioManager:
+                //                mActiveAudioOutDevice: 84:85 isLeOutput: true
+                //   16:42:41.465 BluetoothActiveDeviceChanged for A2DP, 84:85 -&gt; null
+                //   16:42:42.298 handleA2dpActiveDeviceChanged: 84:85, mA2dpActiveDevice=null
+                //   16:42:43     dumpsys audio: strategy 0..11 -&gt; type:bt_a2dp
+                //
+                // That leaves silence on both paths: the earbud tears the classic
+                // link down once the LE Audio CIS is up (16:42:41.634
+                // {@code prof=2 state=0}), and the media strategies still point at
+                // the A2DP device that no longer carries anything.
+                //
+                // So: refuse an A2DP *activation* while LE Audio is the active path
+                // for the same earbud.  Deactivations ({@code device == null}) and
+                // every device that is not an AZ100 pass straight through, so a
+                // genuine fallback to classic audio still works once the LE Audio
+                // group goes inactive.
+                adm.resolve().optional(silent = true).firstMethod {
+                    name = "setA2dpActiveDevice"
+                    parameters(BluetoothDevice::class.java, java.lang.Boolean.TYPE)
+                }.hook {
+                    before {
+                        if (!isAz100Arg(args[0])) return@before;
+                        // Standing aside: let A2DP come back for whichever host
+                        // owns the earbud now.  See LEA_YIELD_WINDOW_MS.
+                        if (inLeaYieldWindow()) return@before;
+                        if (!leaGroupHasAz100(instanceOrNull)) return@before;
+                        result = false;
+                        noteOnce("a2dpReactivationRefused");
+                    }
+                }
+            }
 
             Logs.trace("dual-coexist: ActiveDeviceManager hooks installed");
-        } catch (Throwable t) {
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: ActiveDeviceManager hook failed", t);
             Logs.trace("dual-coexist: ActiveDeviceManager hook FAILED - " + t);
         }
     }
+
 
     /**
      * True while the LE Audio group still holds an AZ100 member.  Called only
      * from the guarded revoke path, i.e. at most a handful of times per
      * connection.
      */
-    private static boolean leaGroupHasAz100(Object admInstance) {
+    private fun leaGroupHasAz100(admInstance: Any?): Boolean {
         try {
-            Object adapter = XposedHelpers.getObjectField(admInstance, ADAPTER_FIELD_ON_ADM);
+            val adapter = Reflect.getObjectField(admInstance, ADAPTER_FIELD_ON_ADM);
             if (adapter == null) return false;
             return leaGroupHasAz100OnService(
-                    optionalGet(XposedHelpers.callMethod(adapter, "getLeAudioService")));
-        } catch (Throwable ignored) {
+                    optionalGet(Reflect.callMethod(adapter, "getLeAudioService")));
+        } catch (ignored: Throwable) {
             // A missing service means "do not interfere".
         }
         return false;
     }
+
 
     /**
      * Unwraps a {@code java.util.Optional} without reflection guessing.
@@ -1205,17 +1405,18 @@ final class OplusDualModeCoexistHook {
      * match {@code orElse(T)} once the compiler has specialised the call site.
      * Asking {@code isPresent()} first avoids the problem entirely.
      */
-    private static Object optionalGet(Object optional) {
+    private fun optionalGet(optional: Any?): Any? {
         if (optional == null) return null;
         try {
-            if (!Boolean.TRUE.equals(XposedHelpers.callMethod(optional, "isPresent"))) {
+            if (!(Reflect.callMethod(optional, "isPresent") == true)) {
                 return null;
             }
-            return XposedHelpers.callMethod(optional, "get");
-        } catch (Throwable ignored) {
+            return Reflect.callMethod(optional, "get");
+        } catch (ignored: Throwable) {
             return null;
         }
     }
+
 
     /**
      * The same question, asked straight of a {@code LeAudioService}: is the
@@ -1225,25 +1426,26 @@ final class OplusDualModeCoexistHook {
      * way when the earbud really is being removed or turned off, where
      * releasing the active device is correct and must be allowed through.
      */
-    private static boolean leaGroupHasAz100OnService(Object leaService) {
+    private fun leaGroupHasAz100OnService(leaService: Any?): Boolean {
         if (leaService == null) return false;
         try {
-            Object active = XposedHelpers.callMethod(leaService, "getActiveDevices");
-            if (!(active instanceof List)) return false;
-            for (Object entry : (List<?>) active) {
-                if (!(entry instanceof BluetoothDevice)) continue;
-                BluetoothDevice device = (BluetoothDevice) entry;
+            val active = Reflect.callMethod(leaService, "getActiveDevices");
+            if (!(active is List<*>)) return false;
+            for (entry in (active as List<*>)) {
+                if (!(entry is BluetoothDevice)) continue;
+                val device = (entry as BluetoothDevice);
                 if (!isAz100(device)) continue;
-                Object state = XposedHelpers.callMethod(leaService,
+                val state = Reflect.callMethod(leaService,
                         "getConnectionState", device);
-                if (state instanceof Integer && ((Integer) state).intValue() == 2) {
+                if (state is Int && state == 2) {
                     return true;
                 }
             }
-        } catch (Throwable ignored) {
+        } catch (ignored: Throwable) {
         }
         return false;
     }
+
 
     /* ------------------------------------------------------------------ */
     /* 5. first gate: LeAudioService.isGroupAvailableForStream()           */
@@ -1309,248 +1511,378 @@ final class OplusDualModeCoexistHook {
      * <p>Only groups that contain an AZ100 member are answered for, so a real
      * LE Audio device keeps the stock behaviour.
      */
-    private static void hookGroupAvailableForStream(ClassLoader cl) {
+    private fun hookGroupAvailableForStream(param: PackageParam) {
+        val cl = loader ?: return;
         try {
-            Class<?> leaService = XposedHelpers.findClass(LE_AUDIO_SERVICE, cl);
-            XposedHelpers.findAndHookMethod(leaService, "isGroupAvailableForStream",
-                    int.class, new XC_MethodHook() {
-                        @Override protected void afterHookedMethod(MethodHookParam param) {
-                            leaServiceRef = param.thisObject;
-                            if (Boolean.TRUE.equals(param.getResult())) return;
-                            Object raw = param.args[0];
-                            if (!(raw instanceof Integer)) return;
-                            int groupId = (Integer) raw;
-                            if (groupId == -1) return;
-                            if (!groupHasAz100(param.thisObject, groupId)) return;
-                            param.setResult(Boolean.TRUE);
+            val leaService = Reflect.findClass(LE_AUDIO_SERVICE, cl);
+            with(param) {
+                leaService.resolve().optional(silent = true).firstMethod {
+                    name = "isGroupAvailableForStream"
+                    parameters(Integer.TYPE)
+                }.hook {
+                    after {
+                            leaServiceRef = instanceOrNull;
+                            // Standing aside: report the stock availability while
+                            // the phone is handing the earbud away, otherwise the
+                            // group is pinned up and the hand-over is undone.
+                            // See LEA_YIELD_WINDOW_MS.
+                            if (inLeaYieldWindow()) return@after;
+                            if (result == true) return@after;
+                            val raw = args[0];
+                            if (raw !is Int) return@after;
+                            val groupId = raw;
+                            if (groupId == -1) return@after;
+                            if (!groupHasAz100(instanceOrNull, groupId)) return@after;
+                            result = true;
                             noteOnce("groupAvailableForStreamForced");
-                        }
-                    });
+                    }
+                }
+            }
             Logs.trace("dual-coexist: isGroupAvailableForStream hook installed");
-        } catch (Throwable t) {
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: isGroupAvailableForStream hook failed", t);
             Logs.trace("dual-coexist: isGroupAvailableForStream hook FAILED - " + t);
         }
     }
+
 
     /**
      * True while the <em>currently active</em> group still holds a connected
      * AZ100.  Used by the deactivation guard, so it is only consulted when the
      * service is already tearing the group down.
      */
-    private static boolean activeGroupHasConnectedAz100(Object leaService) {
+    private fun activeGroupHasConnectedAz100(leaService: Any?): Boolean {
         try {
-            int groupId = activeGroupId(leaService);
+            val groupId = activeGroupId(leaService);
             if (groupId == -1) return false;
-            Object devices = XposedHelpers.callMethod(leaService, "getGroupDevices", groupId);
-            if (!(devices instanceof List)) return false;
-            for (Object entry : (List<?>) devices) {
-                if (!(entry instanceof BluetoothDevice)) continue;
-                BluetoothDevice device = (BluetoothDevice) entry;
+            val devices = Reflect.callMethod(leaService, "getGroupDevices", groupId);
+            if (!(devices is List<*>)) return false;
+            for (entry in (devices as List<*>)) {
+                if (!(entry is BluetoothDevice)) continue;
+                val device = (entry as BluetoothDevice);
                 if (!isAz100(device)) continue;
-                Object state = XposedHelpers.callMethod(leaService, "getConnectionState", device);
-                if (state instanceof Integer && ((Integer) state).intValue() == 2) {
+                val state = Reflect.callMethod(leaService, "getConnectionState", device);
+                if (state is Int && state == 2) {
                     return true;
                 }
             }
-        } catch (Throwable ignored) {
+        } catch (ignored: Throwable) {
             // A missing descriptor means "do not interfere".
         }
         return false;
     }
 
+
     /** {@code LeAudioService.getActiveGroupId()}, or {@code -1} if unavailable. */
-    private static int activeGroupId(Object leaService) {
+    private fun activeGroupId(leaService: Any?): Int {
         if (leaService == null) return -1;
         try {
-            Object raw = XposedHelpers.callMethod(leaService, "getActiveGroupId");
-            return raw instanceof Integer ? ((Integer) raw).intValue() : -1;
-        } catch (Throwable ignored) {
+            val raw = Reflect.callMethod(leaService, "getActiveGroupId");
+            return if (raw is Int) raw else -1;
+        } catch (ignored: Throwable) {
             return -1;
         }
     }
 
+
     /** Does {@code groupId} hold an AZ100 member? */
-    private static boolean groupHasAz100(Object leaService, int groupId) {
+    private fun groupHasAz100(leaService: Any?, groupId: Int): Boolean {
         try {
-            Object devices = XposedHelpers.callMethod(leaService, "getGroupDevices", groupId);
-            if (!(devices instanceof List)) return false;
-            for (Object entry : (List<?>) devices) {
-                if (entry instanceof BluetoothDevice && isAz100((BluetoothDevice) entry)) {
+            val devices = Reflect.callMethod(leaService, "getGroupDevices", groupId);
+            if (!(devices is List<*>)) return false;
+            for (entry in (devices as List<*>)) {
+                if (entry is BluetoothDevice && isAz100((entry as BluetoothDevice))) {
                     return true;
                 }
             }
-        } catch (Throwable ignored) {
+        } catch (ignored: Throwable) {
             // A missing descriptor means "do not interfere".
         }
         return false;
     }
+
 
     /* ------------------------------------------------------------------ */
     /* 6. last gate: LeAudioService.setActiveDevice()                      */
     /* ------------------------------------------------------------------ */
 
-    /**
-     * With {@code Utils.isDualModeAudioEnabled()} true, the vendor ROM refuses
-     * to activate the LE Audio group unless <em>every</em> supported classic
-     * audio profile is already active on the same device:
-     *
-     * <pre>
-     *   // LeAudioService.setActiveDevice()
-     *   if (!Utils.isDualModeAudioEnabled()
-     *           || getAdapterService().isAllSupportedClassicAudioProfilesActive(device)) {
-     *       return setActiveGroupWithDevice(device, false);
-     *   }
-     *   Log...("failed because the device is not active for all supported classic audio profiles");
-     *   return false;
-     * </pre>
-     *
-     * That is circular once the classic active slots have been handed over, and
-     * it is the reason {@code currentlyActiveGroupId} stayed at {@code -1}.  Go
-     * straight to the private {@code setActiveGroupWithDevice()} the ROM itself
-     * would have called -- the connectivity precondition is re-checked here, so
-     * an unconnected device is still rejected by the original code.
-     */
-    private static void hookLeAudioActiveBypass(ClassLoader cl) {
+    /** Observe native ownership signals before the ROM can reactivate the group. */
+    private fun hookLeaHandoffSignals(param: PackageParam) {
+        val cl = loader ?: return;
         try {
-            Class<?> leaService = XposedHelpers.findClass(LE_AUDIO_SERVICE, cl);
-            XposedHelpers.findAndHookMethod(leaService, "setActiveDevice",
-                    BluetoothDevice.class, new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            Object raw = param.args[0];
-                            if (!(raw instanceof BluetoothDevice)) {
-                                // A tear-down request (device == null).  Catch-all for
-                                // any other caller that revokes LE Audio while the
-                                // hand-over is still in flight -- see LEA_HOLD_WINDOW_MS.
-                                if (SystemClock.elapsedRealtime() - leaActiveAt
-                                        > LEA_HOLD_WINDOW_MS) {
-                                    return;
+            val service = Reflect.findClass(LE_AUDIO_SERVICE, cl);
+            val eventClass = Reflect.findClass("com.android.bluetooth.le_audio.LeAudioStackEvent", cl);
+            val audioConf = Reflect.getStaticObjectField(eventClass, "EVENT_TYPE_AUDIO_CONF_CHANGED") as Int;
+            val groupStatus = Reflect.getStaticObjectField(eventClass, "EVENT_TYPE_GROUP_STATUS_CHANGED") as Int;
+            val autonomousInactive = Reflect.getStaticObjectField(eventClass, "GROUP_STATUS_AUTONOMOUS_INACTIVE") as Int;
+            val groupHealth = Reflect.getStaticObjectField(eventClass, "EVENT_TYPE_HEALTH_BASED_GROUP_RECOMMENDATION") as Int;
+            val inactivateGroup = Reflect.getStaticObjectField(eventClass, "HEALTH_RECOMMENDATION_ACTION_INACTIVATE_GROUP") as Int;
+            with(param) {
+                service.resolve().optional(silent = true).firstMethod {
+                    name = "messageFromNative"
+                    parameters(eventClass)
+                }.hook {
+                    before {
+                        val event = args[0] ?: return@before;
+                        val type = Reflect.getObjectField(event, "type") as? Int ?: return@before;
+                        if (type != audioConf && type != groupStatus && type != groupHealth) return@before;
+                        val first = Reflect.getObjectField(event, "valueInt1") as? Int ?: return@before;
+                        val second = Reflect.getObjectField(event, "valueInt2") as? Int ?: return@before;
+                        val groupId = if (type == audioConf) second else first;
+                        if (groupId == -1 || !groupHasAz100(instanceOrNull, groupId)) return@before;
+                        leaServiceRef = instanceOrNull;
+                        if (type == audioConf) {
+                            val contexts = Reflect.getObjectField(event, "valueInt5") as? Int ?: return@before;
+                            when (LEA_HANDOFF.onAvailableContexts(
+                                    groupId, contexts, SystemClock.elapsedRealtime())) {
+                                LeaHandoffState.ContextChange.YIELDED -> {
+                                    Logs.trace("dual-coexist: MEDIA withdrawn, group=" + groupId);
+                                    openLeaYieldWindow("mediaContextWithdrawn");
                                 }
-                                if (!leaGroupHasAz100OnService(param.thisObject)) return;
-                                param.setResult(Boolean.FALSE);
-                                noteOnce("leaTearDownRefused");
-                                return;
+                                LeaHandoffState.ContextChange.RESUMED -> {
+                                    Logs.trace("dual-coexist: MEDIA returned, group=" + groupId);
+                                }
+                                LeaHandoffState.ContextChange.NONE -> Unit
                             }
-                            BluetoothDevice device = (BluetoothDevice) raw;
-                            if (!isAz100(device)) return;
-                            Object state = XposedHelpers.callMethod(param.thisObject,
+                        } else if ((type == groupStatus && second == autonomousInactive)
+                                || (type == groupHealth && second == inactivateGroup)) {
+                            yieldLeaToRemote(groupId, if (type == groupStatus)
+                                    "autonomousInactive" else "blockedMediaContext");
+                        }
+                    }
+                }
+                service.resolve().optional(silent = true).method { name = "connect" }.hookAll {
+                    before {
+                        if (args.isEmpty() || !isAz100Arg(args[0])) return@before;
+                        if (IN_LOCAL_LEA_SELECTION.get() == true) {
+                            resumeLeaLocally();
+                        } else if (LEA_HANDOFF.isRemoteYielding()) {
+                            result = false;
+                            noteOnce("leaConnectYielded");
+                        }
+                    }
+                }
+            }
+            Logs.trace("dual-coexist: native handoff signals armed");
+        } catch (t: Throwable) {
+            Logs.trace("dual-coexist: native handoff signals FAILED", t);
+        }
+        hookLocalLeaSelection(param, "com.android.bluetooth.le_audio.LeAudioServiceBinder", "connect");
+        hookLocalLeaSelection(param, "com.android.bluetooth.btservice.AdapterServiceBinder", "connectAllEnabledProfiles");
+    }
+
+
+    /** Observe resource release before profile callbacks queue classic fallback. */
+    private fun hookLeaAclRelease(param: PackageParam) {
+        val cl = loader ?: return;
+        try {
+            val remoteDevices = Reflect.findClass("com.android.bluetooth.btservice.RemoteDevices", cl);
+            with(param) {
+                remoteDevices.resolve().optional(silent = true).firstMethod {
+                    name = "aclStateChangeCallback"
+                    parameters(Integer.TYPE, ByteArray::class.java, Integer.TYPE,
+                            Integer.TYPE, Integer.TYPE, Integer.TYPE, Integer.TYPE)
+                }.hook {
+                    before {
+                        // Android 17: status, address, addressType, transport,
+                        // raw ACL state (0=connected, 1=disconnected), reason, handle.
+                        if (args[0] != 0 || args[4] != 1) return@before;
+                        val transport = args[3] as? Int ?: return@before;
+                        val reason = args[5] as? Int ?: return@before;
+                        if (transport != 2 || reason != 0x14) return@before;
+                        val address = args[1] as? ByteArray ?: return@before;
+                        val device = Reflect.callMethod(instanceOrNull, "getDevice", address)
+                                as? BluetoothDevice ?: return@before;
+                        if (!isAz100(device)) return@before;
+                        val groupId = activeGroupId(leaServiceRef);
+                        if (LEA_HANDOFF.onAclDisconnected(groupId, transport, reason,
+                                SystemClock.elapsedRealtime())) {
+                            Logs.trace("dual-coexist: remote ACL resource release "
+                                    + mask(device.getAddress()) + " group=" + groupId + " reason=0x14");
+                            openLeaYieldWindow("remoteAclLowResources");
+                        }
+                    }
+                }
+            }
+            Logs.trace("dual-coexist: ACL resource-release hook armed");
+        } catch (t: Throwable) {
+            Logs.trace("dual-coexist: ACL resource-release hook FAILED", t);
+        }
+    }
+
+
+    /** Binder entry points identify an explicit local connect/output selection. */
+    private fun hookLocalLeaSelection(param: PackageParam, className: String, connectMethod: String) {
+        val cl = loader ?: return;
+        try {
+            val binder = Reflect.findClass(className, cl);
+            with(param) {
+                binder.resolve().optional(silent = true).method {
+                    name = "setActiveDevice"
+                }.hookAll {
+                    before {
+                        if (args.isNotEmpty() && isAz100Arg(args[0])) {
+                            IN_LOCAL_LEA_SELECTION.set(true);
+                        }
+                    }
+                    after { IN_LOCAL_LEA_SELECTION.remove(); }
+                }
+                binder.resolve().optional(silent = true).method {
+                    name = connectMethod
+                }.hookAll {
+                    before {
+                        if (args.isNotEmpty() && isAz100Arg(args[0])) {
+                            IN_LOCAL_LEA_SELECTION.set(true);
+                        }
+                    }
+                    after { IN_LOCAL_LEA_SELECTION.remove(); }
+                }
+            }
+            // Reset at the permission-checked AdapterService entry; its body may
+            // choose classic profiles before it ever reaches LeAudioService.
+            if (connectMethod == "connectAllEnabledProfiles") {
+                val adapter = Reflect.findClass("com.android.bluetooth.btservice.AdapterService", cl);
+                with(param) {
+                    adapter.resolve().optional(silent = true).method {
+                        name = connectMethod
+                    }.hookAll {
+                        before {
+                            if (IN_LOCAL_LEA_SELECTION.get() != true) return@before;
+                            if (args.isNotEmpty() && isAz100Arg(args[0])) resumeLeaLocally();
+                        }
+                    }
+                    adapter.resolve().optional(silent = true).method {
+                        name = "setActiveDevice"
+                    }.hookAll {
+                        before {
+                            if (IN_LOCAL_LEA_SELECTION.get() != true) return@before;
+                            if (args.isNotEmpty() && isAz100Arg(args[0])) resumeLeaLocally();
+                        }
+                    }
+                }
+            }
+            Logs.trace("dual-coexist: local selection armed (" + className + ")");
+        } catch (t: Throwable) {
+            Logs.trace("dual-coexist: local selection hook FAILED (" + className + ")", t);
+        }
+    }
+
+
+    /**
+     * Bypass the ROM's requirement that every classic profile is already active
+     * before selecting LE Audio. Connectivity is still checked before activation.
+     */
+    private fun hookLeAudioActiveBypass(param: PackageParam) {
+        val cl = loader ?: return;
+        try {
+            val leaService = Reflect.findClass(LE_AUDIO_SERVICE, cl);
+            with(param) {
+                leaService.resolve().optional(silent = true).firstMethod {
+                    name = "setActiveDevice"
+                    parameters(BluetoothDevice::class.java)
+                }.hook {
+                    before {
+                            val raw = args[0];
+                            if (raw is BluetoothDevice && isAz100(raw)
+                                    && IN_LOCAL_LEA_SELECTION.get() == true) {
+                                resumeLeaLocally();
+                            }
+                            if (inLeaYieldWindow()) {
+                                // The original method also calls groupSetAudioResume.
+                                // A confirmed remote handoff must stop that path too.
+                                if (isAz100Arg(raw) && LEA_HANDOFF.isRemoteYielding()) {
+                                    result = false;
+                                }
+                                noteOnce("leaActiveForcedYielded");
+                                return@before;
+                            }
+                            if (!(raw is BluetoothDevice)) {
+                                // A null device releases the local output. Do not
+                                // keep the group alive for the startup window:
+                                // measured 15:13, that refusal left LE Audio active
+                                // while the computer was trying to take A2DP.
+                                return@before;
+                            }
+                            val device = (raw as BluetoothDevice);
+                            if (!isAz100(device)) return@before;
+                            val state = Reflect.callMethod(instanceOrNull,
                                     "getConnectionState", device);
-                            if (!(state instanceof Integer) || ((Integer) state).intValue() != 2) {
-                                return;
+                            if (!(state is Integer) || (state as Int) != 2) {
+                                return@before;
                             }
                             try {
-                                Object ok = XposedHelpers.callMethod(param.thisObject,
-                                        "setActiveGroupWithDevice", device, Boolean.FALSE);
-                                param.setResult(ok);
+                                val ok = Reflect.callMethod(instanceOrNull,
+                                        "setActiveGroupWithDevice", device, false);
+                                result = ok;
                                 note(device, "groupActivated=" + ok);
-                            } catch (Throwable t) {
+                            } catch (t: Throwable) {
                                 Logs.trace("dual-coexist: setActiveGroupWithDevice failed - " + t);
                             }
-                        }
-                    });
-        } catch (Throwable t) {
+                    }
+                }
+            }
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: LeAudioService.setActiveDevice hook failed", t);
             Logs.trace("dual-coexist: LeAudioService.setActiveDevice hook FAILED - " + t);
         }
 
         try {
-            Class<?> leaService = XposedHelpers.findClass(LE_AUDIO_SERVICE, cl);
+            val leaService = Reflect.findClass(LE_AUDIO_SERVICE, cl);
             // The other half of the same gate.  setActiveDevice(null) reaches
             // removeActiveDevice(false), but the vendor jar also calls
             // removeActiveDevice(true) directly -- from
             // OplusAdapterServiceExtImpl.setActiveDevice() when it hands the
             // slot to a classic profile, among others.
-            XposedHelpers.findAndHookMethod(leaService, "removeActiveDevice",
-                    boolean.class, new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
+            with(param) {
+                leaService.resolve().optional(silent = true).firstMethod {
+                    name = "removeActiveDevice"
+                    parameters(java.lang.Boolean.TYPE)
+                }.hook {
+                        before {
                             // Mark the nested setActiveGroupWithDevice(null, ...)
                             // call as a deliberate API request, so the
                             // deactivation guard lets it through.
-                            IN_REMOVE_ACTIVE.set(Boolean.TRUE);
-                            if (SystemClock.elapsedRealtime() - leaActiveAt
-                                    > LEA_HOLD_WINDOW_MS) {
-                                return;
-                            }
-                            if (!leaGroupHasAz100OnService(param.thisObject)) return;
-                            param.setResult(Boolean.FALSE);
-                            noteOnce("removeActiveDeviceRefused");
+                            IN_REMOVE_ACTIVE.set(true);
+                            // A deliberate teardown is the handoff path. The old
+                            // 15-second refusal kept the phone as owner after a
+                            // process restart and blocked the computer.
                         }
 
-                        @Override protected void afterHookedMethod(MethodHookParam param) {
+                        after {
                             // The nested call normally consumes the marker; clear
                             // it here too so a throw cannot leak it onto the
                             // thread and disarm the guard later.
                             IN_REMOVE_ACTIVE.remove();
                         }
-                    });
-        } catch (Throwable t) {
+                    }
+            }
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: LeAudioService.removeActiveDevice hook failed", t);
             Logs.trace("dual-coexist: LeAudioService.removeActiveDevice hook FAILED - " + t);
         }
 
         try {
-            Class<?> leaService = XposedHelpers.findClass(LE_AUDIO_SERVICE, cl);
-            // The gate that undid the hand-over 38 ms after it succeeded.
-            //
-            // LeAudioService inactivates the group whenever a native context
-            // report says no audio context is available:
-            //
-            // <pre>
-            //   // LeAudioService:4795, handling a context-available event
-            //   if (groupDescriptor.mAvailableContexts.intValue() == 0) {
-            //       if (groupDescriptor.isActive()) {
-            //           Log.i(TAG, " Inactivating group " + i2 + " due to unavailable context types");
-            //           groupDescriptor.mInactivatedDueToContextType = Boolean.TRUE;
-            //           setActiveGroupWithDevice(null, false);        // &lt;-- here
-            //       }
-            //       return;
-            //   }
-            // </pre>
-            //
-            // Measured on device, immediately after the hand-over this file
-            // makes possible:
-            //
-            // <pre>
-            //   ...26703 dual-coexist: groupActivated=true
-            //   ...26703 dual-coexist: leAudioActive
-            //   ...26741 dual-coexist: groupSwitch.null          (38 ms later)
-            // </pre>
-            //
-            // and the group then sits INACTIVE, which puts every media strategy
-            // back on {@code bt_a2dp}.  Auto-active mode is the correct policy
-            // for a headset that only speaks LE Audio, but here
-            // {@code mAvailableContexts} is driven by the vendor's dual-mode
-            // bookkeeping and reads zero even while media is playing, so the
-            // matching reactivation path (LeAudioService:4806) never runs
-            // either.  Forcing the availability check open without also holding
-            // the group up just produces a 38 ms on/off cycle.
-            //
-            // So: refuse the deactivation while the active group still holds a
-            // connected AZ100.  A real disconnect empties the group, so the
-            // teardown still goes through then.
-            //
-            // <p>The guard deliberately covers only the two automatic,
-            // context-driven call sites -- LeAudioService:4799 (contexts went to
-            // zero) and LeAudioService:1465 ({@code handleGroupHealthAction()}
-            // reporting a blocked media context).  Both set
-            // {@code mInactivatedDueToContextType} to true, i.e. the stack
-            // itself considers the state temporary and would bring the group
-            // back when contexts return.  The third call site,
-            // LeAudioService:5300, is {@code removeActiveDevice()} -- an
-            // explicit request -- and is let through via {@link #IN_REMOVE_ACTIVE}.
-            //
-            // <p>The remaining two call sites pass a real device
-            // (LeAudioService:4809 reactivation, :5391 setActiveDevice) and
-            // never reach this branch.
-            XposedHelpers.findAndHookMethod(leaService, "setActiveGroupWithDevice",
-                    BluetoothDevice.class, boolean.class, new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            if (param.args[0] instanceof BluetoothDevice) {
+            val leaService = Reflect.findClass(LE_AUDIO_SERVICE, cl);
+            // Context-driven deactivation is held only during initial bring-up.
+            // Once MEDIA is withdrawn, keeping the group active prevents the
+            // headset from handing its stream to another host.
+            with(param) {
+                leaService.resolve().optional(silent = true).firstMethod {
+                    name = "setActiveGroupWithDevice"
+                    parameters(BluetoothDevice::class.java, java.lang.Boolean.TYPE)
+                }.hook {
+                        before {
+                            if (args[0] is BluetoothDevice) {
+                                if (isAz100Arg(args[0]) && LEA_HANDOFF.isRemoteYielding()) {
+                                    result = false;
+                                    noteOnce("groupActivationYielded");
+                                    return@before;
+                                }
                                 noteOnce("groupSwitch.device");
-                                return;
+                                return@before;
                             }
                             // Consume the API marker first, whatever we decide.
-                            boolean apiRequest = Boolean.TRUE.equals(IN_REMOVE_ACTIVE.get());
+                            val apiRequest = (IN_REMOVE_ACTIVE.get() == true);
                             IN_REMOVE_ACTIVE.remove();
                             if (apiRequest) {
                                 // Deliberate request -- AudioService giving the
@@ -1560,12 +1892,21 @@ final class OplusDualModeCoexistHook {
                                 // hook above already covers the hand-over
                                 // window; after that this must go through.
                                 noteOnce("groupSwitch.apiRequest");
-                                return;
+                                beginYieldOnApiRelease(instanceOrNull, args[1]);
+                                return@before;
                             }
                             noteOnce("groupSwitch.null");
-                            if (!activeGroupHasConnectedAz100(param.thisObject)) return;
-                            param.setResult(Boolean.TRUE);
-                            noteOnce("groupDeactivationRefused");
+                            // No marker: the stack is inactivating the group by
+                            // itself (no available contexts, blocked media
+                            // context).  While the window is open that is the
+                            // outcome being asked for -- refusing it here would
+                            // re-open the fight the window exists to end.
+                            if (inLeaYieldWindow()) {
+                                noteOnce("groupDeactivationYielded");
+                                return@before;
+                            }
+                            if (!activeGroupHasConnectedAz100(instanceOrNull)) return@before;
+                            yieldLeaToRemote(activeGroupId(instanceOrNull), "contextRelease");
                         }
 
                         /**
@@ -1583,28 +1924,35 @@ final class OplusDualModeCoexistHook {
                          * really is inactive hands A2DP back
                          * ({@link #scheduleExclusiveExit}).
                          */
-                        @Override protected void afterHookedMethod(MethodHookParam param) {
-                            if (!Boolean.TRUE.equals(param.getResult())) return;
-                            leaServiceRef = param.thisObject;
-                            Object raw = param.args[0];
-                            if (raw instanceof BluetoothDevice) {
-                                BluetoothDevice device = (BluetoothDevice) raw;
+                        after {
+                            if (result != true) return@after;
+                            leaServiceRef = instanceOrNull;
+                            val raw = args[0];
+                            if (raw is BluetoothDevice) {
+                                val device = (raw as BluetoothDevice);
                                 if (isAz100(device)) scheduleExclusiveEnter(device);
-                                return;
+                                return@after;
                             }
-                            if (activeGroupId(param.thisObject) != -1) return;
+                            if (activeGroupId(instanceOrNull) != -1) return@after;
+                            // The group really went inactive while an AZ100 is
+                            // still on LE Audio: the phone handed the active slot
+                            // away.  Stop fighting for it.
+                            if (az100LeaPresent(instanceOrNull)) {
+                                openLeaYieldWindow("groupReleasedInactive");
+                            }
                             scheduleExclusiveExit();
                         }
-                    });
+                    }
+            }
 
             Logs.trace("dual-coexist: LeAudioService hooks installed");
-        } catch (Throwable t) {
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: LeAudioService hooks failed", t);
             Logs.trace("dual-coexist: LeAudioService hooks FAILED - " + t);
         }
 
         try {
-            Class<?> leaService = XposedHelpers.findClass(LE_AUDIO_SERVICE, cl);
+            val leaService = Reflect.findClass(LE_AUDIO_SERVICE, cl);
             // Second exit trigger: the earbud leaving LE Audio altogether.
             //
             //   // LeAudioService.notifyConnectionStateChanged()
@@ -1617,22 +1965,27 @@ final class OplusDualModeCoexistHook {
             // left in EXCLUSIVE would keep A2DP blocked for the rest of the
             // Bluetooth process's life, which is exactly the "no LDAC ever
             // again" failure this design is trying to avoid.
-            XposedHelpers.findAndHookMethod(leaService, "notifyConnectionStateChanged",
-                    BluetoothDevice.class, int.class, int.class, new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            if (!isAz100Arg(param.args[0])) return;
-                            Object state = param.args[1];
-                            if (!(state instanceof Integer)) return;
-                            if (((Integer) state).intValue() != 0) return;
-                            leaServiceRef = param.thisObject;
+            with(param) {
+                leaService.resolve().optional(silent = true).firstMethod {
+                    name = "notifyConnectionStateChanged"
+                    parameters(BluetoothDevice::class.java, Integer.TYPE, Integer.TYPE)
+                }.hook {
+                        before {
+                            if (!isAz100Arg(args[0])) return@before;
+                            val state = args[1];
+                            if (!(state is Integer)) return@before;
+                            if ((state as Int) != 0) return@before;
+                            leaServiceRef = instanceOrNull;
                             scheduleExclusiveExit();
                         }
-                    });
+                    }
+            }
             Logs.trace("dual-coexist: notifyConnectionStateChanged hook installed");
-        } catch (Throwable t) {
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: notifyConnectionStateChanged hook failed", t);
         }
     }
+
 
     /* ------------------------------------------------------------------ */
     /* 7. the vendor's own A2DP choke point                                */
@@ -1672,27 +2025,32 @@ final class OplusDualModeCoexistHook {
      * jar, which never pass through {@code ActiveDeviceManager} at all.  Only
      * activations are refused; {@code null} and non-AZ100 devices pass through.
      */
-    private static void hookA2dpActiveGuard(ClassLoader cl) {
+    private fun hookA2dpActiveGuard(param: PackageParam) {
+        val cl = loader ?: return;
         try {
-            Class<?> a2dpService = XposedHelpers.findClass(A2DP_SERVICE, cl);
-            XposedHelpers.findAndHookMethod(a2dpService, "setActiveDevice",
-                    BluetoothDevice.class, new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            if (!isAz100Arg(param.args[0])) return;
-                            BluetoothDevice device = (BluetoothDevice) param.args[0];
-                            if (!classicMustStayDown(device)) return;
-                            param.setResult(Boolean.FALSE);
+            val a2dpService = Reflect.findClass(A2DP_SERVICE, cl);
+            with(param) {
+                a2dpService.resolve().optional(silent = true).firstMethod {
+                    name = "setActiveDevice"
+                    parameters(BluetoothDevice::class.java)
+                }.hook {
+                    before {
+                            if (!isAz100Arg(args[0])) return@before;
+                            val device = (args[0] as BluetoothDevice);
+                            if (!classicMustStayDown(device)) return@before;
+                            result = false;
                             noteOnce("a2dpActivationRefusedAtService");
                         }
-                    });
+                    }
+            }
             Logs.trace("dual-coexist: A2dpService.setActiveDevice hook installed");
-        } catch (Throwable t) {
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: A2dpService hook failed", t);
             Logs.trace("dual-coexist: A2dpService hook FAILED - " + t);
         }
 
         try {
-            Class<?> a2dpService = XposedHelpers.findClass(A2DP_SERVICE, cl);
+            val a2dpService = Reflect.findClass(A2DP_SERVICE, cl);
             // The connection gate, and the half that keeps A2DP from simply
             // coming back after the disconnect.
             //
@@ -1717,18 +2075,22 @@ final class OplusDualModeCoexistHook {
             // reboot, leaving LDAC dead until someone re-enabled it by hand.
             // This refusal lives in the process, so killing Bluetooth -- or
             // simply disabling this module -- restores normal behaviour.
-            XposedHelpers.findAndHookMethod(a2dpService, "okToConnect",
-                    BluetoothDevice.class, boolean.class, new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            if (!isAz100Arg(param.args[0])) return;
-                            BluetoothDevice device = (BluetoothDevice) param.args[0];
-                            if (!classicMustStayDown(device)) return;
-                            param.setResult(Boolean.FALSE);
+            with(param) {
+                a2dpService.resolve().optional(silent = true).firstMethod {
+                    name = "okToConnect"
+                    parameters(BluetoothDevice::class.java, java.lang.Boolean.TYPE)
+                }.hook {
+                    before {
+                            if (!isAz100Arg(args[0])) return@before;
+                            val device = (args[0] as BluetoothDevice);
+                            if (!classicMustStayDown(device)) return@before;
+                            result = false;
                             noteOnce("a2dpConnectRefused");
                         }
-                    });
+                    }
+            }
             Logs.trace("dual-coexist: A2dpService.okToConnect hook installed");
-        } catch (Throwable t) {
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: A2dpService.okToConnect hook failed", t);
             Logs.trace("dual-coexist: A2dpService.okToConnect hook FAILED - " + t);
         }
@@ -1751,25 +2113,30 @@ final class OplusDualModeCoexistHook {
             // shared with HFP, HID, LE Audio, Hearing Aid and friends, hence the
             // instance check -- without it this would start rejecting their
             // connections too.
-            Class<?> connectable = XposedHelpers.findClass(CONNECTABLE_PROFILE, cl);
-            Class<?> a2dpService = XposedHelpers.findClass(A2DP_SERVICE, cl);
-            XposedHelpers.findAndHookMethod(connectable, "okToConnect",
-                    BluetoothDevice.class, new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            if (!a2dpService.isInstance(param.thisObject)) return;
-                            if (!isAz100Arg(param.args[0])) return;
-                            BluetoothDevice device = (BluetoothDevice) param.args[0];
-                            if (!classicMustStayDown(device)) return;
-                            param.setResult(Boolean.FALSE);
+            val connectable = Reflect.findClass(CONNECTABLE_PROFILE, cl);
+            val a2dpService = Reflect.findClass(A2DP_SERVICE, cl);
+            with(param) {
+                connectable.resolve().optional(silent = true).firstMethod {
+                    name = "okToConnect"
+                    parameters(BluetoothDevice::class.java)
+                }.hook {
+                    before {
+                            if (!a2dpService.isInstance(instanceOrNull)) return@before;
+                            if (!isAz100Arg(args[0])) return@before;
+                            val device = (args[0] as BluetoothDevice);
+                            if (!classicMustStayDown(device)) return@before;
+                            result = false;
                             noteOnce("a2dpConnectRefused");
                         }
-                    });
+                    }
+            }
             Logs.trace("dual-coexist: ConnectableProfile.okToConnect hook installed");
-        } catch (Throwable t) {
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: ConnectableProfile.okToConnect hook failed", t);
             Logs.trace("dual-coexist: ConnectableProfile.okToConnect hook FAILED - " + t);
         }
     }
+
 
     /**
      * Should the classic audio profiles stay down for this device?
@@ -1787,22 +2154,28 @@ final class OplusDualModeCoexistHook {
      * profiles or through LE Audio; there is no arrangement in which LE Audio
      * holds the path and a classic profile should hold it too.
      */
-    private static boolean classicMustStayDown(BluetoothDevice device) {
+    private fun classicMustStayDown(device: BluetoothDevice): Boolean {
+        // Standing aside: whichever host owns the earbud now needs the classic
+        // path free, so nothing is held down for the duration of the window.
+        // See LEA_YIELD_WINDOW_MS.
+        if (inLeaYieldWindow()) return false;
         if (isReleasing(device)) return false;
         if (isExclusive(device)) return true;
-        Object lea = leaServiceRef;
+        val lea = leaServiceRef;
         return lea != null && leaGroupHasAz100OnService(lea);
     }
+
 
     /**
      * True while this class is itself asking A2DP to come back for the device.
      * See {@link #RELEASING} -- without this the release refuses itself.
      */
-    private static boolean isReleasing(BluetoothDevice device) {
+    private fun isReleasing(device: BluetoothDevice): Boolean {
         if (device == null) return false;
-        String address = device.getAddress();
+        val address = device.getAddress();
         return address != null && RELEASING.contains(address);
     }
+
 
     /**
      * Is this device currently held down by an LE Audio exclusive session?
@@ -1818,16 +2191,18 @@ final class OplusDualModeCoexistHook {
      * entries) and costs a map read per entry, which is fine for a hook that runs
      * on every connect attempt.
      */
-    private static boolean isExclusive(BluetoothDevice device) {
+    private fun isExclusive(device: BluetoothDevice): Boolean {
         if (device == null) return false;
-        String address = device.getAddress();
+        val address = device.getAddress();
         if (address == null) return false;
         if (EXCLUSIVE.containsKey(address)) return true;
-        for (String le : EXCLUSIVE.keySet()) {
-            if (address.equalsIgnoreCase(A2DP_PEER.get(le))) return true;
+        for (le in EXCLUSIVE.keys) {
+            val peer = A2DP_PEER[le]
+            if (peer != null && address.equals(peer, ignoreCase = true)) return true
         }
         return false;
     }
+
 
     /**
      * Keeps HFP from taking the slot that A2DP just vacated.
@@ -1859,21 +2234,25 @@ final class OplusDualModeCoexistHook {
      * costs nothing on calls: with LE Audio active the earbud is still reachable,
      * and its own telephony strategy goes over the LE Audio link.
      */
-    private static void hookHfpActiveGuard(ClassLoader cl) {
+    private fun hookHfpActiveGuard(param: PackageParam, cl: ClassLoader) {
         try {
-            Class<?> admExt = XposedHelpers.findClass(ADM_EXT_IMPL, cl);
-            XposedHelpers.findAndHookMethod(admExt, "oplusSetHfpActiveDevice",
-                    BluetoothDevice.class, new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            if (!isAz100Arg(param.args[0])) return;
-                            BluetoothDevice device = (BluetoothDevice) param.args[0];
-                            if (!classicMustStayDown(device)) return;
-                            param.setResult(Boolean.FALSE);
+            val admExt = Reflect.findClass(ADM_EXT_IMPL, cl);
+            with(param) {
+                admExt.resolve().optional(silent = true).firstMethod {
+                    name = "oplusSetHfpActiveDevice"
+                    parameters(BluetoothDevice::class.java)
+                }.hook {
+                    before {
+                            if (!isAz100Arg(args[0])) return@before;
+                            val device = (args[0] as BluetoothDevice);
+                            if (!classicMustStayDown(device)) return@before;
+                            result = false;
                             noteOnce("hfpActivationRefused");
                         }
-                    });
+                    }
+            }
             Logs.trace("dual-coexist: oplusSetHfpActiveDevice hook installed");
-        } catch (Throwable t) {
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: oplusSetHfpActiveDevice hook failed", t);
             Logs.trace("dual-coexist: oplusSetHfpActiveDevice hook FAILED - " + t);
         }
@@ -1896,23 +2275,28 @@ final class OplusDualModeCoexistHook {
             //
             // The one-argument overload delegates here, so this single hook covers
             // every route.  Null still passes, so clearing keeps working.
-            Class<?> headsetService = XposedHelpers.findClass(HEADSET_SERVICE, cl);
-            XposedHelpers.findAndHookMethod(headsetService, "setActiveDevice",
-                    BluetoothDevice.class, boolean.class, new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            if (!isAz100Arg(param.args[0])) return;
-                            BluetoothDevice device = (BluetoothDevice) param.args[0];
-                            if (!classicMustStayDown(device)) return;
-                            param.setResult(Boolean.FALSE);
+            val headsetService = Reflect.findClass(HEADSET_SERVICE, cl);
+            with(param) {
+                headsetService.resolve().optional(silent = true).firstMethod {
+                    name = "setActiveDevice"
+                    parameters(BluetoothDevice::class.java, java.lang.Boolean.TYPE)
+                }.hook {
+                    before {
+                            if (!isAz100Arg(args[0])) return@before;
+                            val device = (args[0] as BluetoothDevice);
+                            if (!classicMustStayDown(device)) return@before;
+                            result = false;
                             noteOnce("hfpSetActiveRefused");
                         }
-                    });
+                    }
+            }
             Logs.trace("dual-coexist: HeadsetService.setActiveDevice hook installed");
-        } catch (Throwable t) {
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: HeadsetService.setActiveDevice hook failed", t);
             Logs.trace("dual-coexist: HeadsetService.setActiveDevice hook FAILED - " + t);
         }
     }
+
 
     /* ------------------------------------------------------------------ */
     /* 8. LE Audio exclusivity                                             */
@@ -1973,24 +2357,36 @@ final class OplusDualModeCoexistHook {
      * <p>Everything here is in-process state, so disabling the module or
      * restarting Bluetooth restores stock behaviour immediately.
      */
-    private static void scheduleExclusiveEnter(final BluetoothDevice device) {
+    private fun scheduleExclusiveEnter(device: BluetoothDevice) {
         if (device == null) return;
-        final String address = device.getAddress();
+        // Standing aside: don't take A2DP/HFP away from the earbud while the
+        // phone is handing it to another host.  See LEA_YIELD_WINDOW_MS.
+        if (inLeaYieldWindow()) {
+            noteOnce("leaExclusiveEnterYielded");
+            return;
+        }
+        val address = device.getAddress();
         if (address == null) return;
         if (EXCLUSIVE.putIfAbsent(address, device) != null) return;
 
-        DEFERRED.schedule(() -> {
-            Object lea = leaServiceRef;
+        DEFERRED.schedule(object : Runnable {
+            override fun run() {
+            val lea = leaServiceRef;
+            if (inLeaYieldWindow()) {
+                EXCLUSIVE.remove(address);
+                noteOnce("leaExclusiveDeferredYielded");
+                return;
+            }
             // Re-check the premise before acting on it.  The activation this was
             // queued from may already have been undone -- and disconnecting
             // A2DP for an earbud that no longer has LE Audio would leave it with
             // no audio path at all.
-            if (!activeGroupHasConnectedAz100(lea)) {
+            if (!activeGroupHasConnectedAz100(lea) || !leaOutputStreaming(lea)) {
                 EXCLUSIVE.remove(address);
                 noteOnce("leaExclusiveAborted@" + address);
                 return;
             }
-            Object a2dp = a2dpServiceOf(lea);
+            val a2dp = a2dpServiceOf(lea);
             if (a2dp == null) {
                 EXCLUSIVE.remove(address);
                 noteOnce("leaExclusiveNoA2dp@" + address);
@@ -2001,12 +2397,12 @@ final class OplusDualModeCoexistHook {
             // a2dpPeerOf().  disconnect() looks the device up in its own state
             // machine table and silently logs "no state machine" for an LE-only
             // address, so the enter path needs the same resolution as the exit.
-            BluetoothDevice classic = a2dpPeerOf(device);
+            val classic = a2dpPeerOf(device);
             if (classic != null) {
                 try {
-                    XposedHelpers.callMethod(a2dp, "disconnect", classic);
+                    Reflect.callMethod(a2dp, "disconnect", classic);
                     noteOnce("leaExclusiveOn@" + address);
-                } catch (Throwable t) {
+                } catch (t: Throwable) {
                     EXCLUSIVE.remove(address);
                     Logs.trace("dual-coexist: A2DP disconnect failed - " + t);
                     return;
@@ -2037,15 +2433,20 @@ final class OplusDualModeCoexistHook {
             // ...and the fallback is not instantaneous, so check once more after
             // it has had time to happen.  Bounded on purpose -- a second pass,
             // never a retry loop.
-            DEFERRED.schedule(() -> {
-                if (!EXCLUSIVE.containsKey(address)) return;
-                Object live = leaServiceRef;
-                if (!activeGroupHasConnectedAz100(live)) return;
-                clearHfpActiveDevice(live, "hfpActiveReasserted");
-                reassertLeAudioOutput(live, "leaOutputReassertedAgain");
-            }, HFP_REASSERT_MS, TimeUnit.MILLISECONDS);
+            DEFERRED.schedule(object : Runnable {
+                override fun run() {
+                    if (inLeaYieldWindow()) return
+                    if (!EXCLUSIVE.containsKey(address)) return
+                    val live = leaServiceRef
+                    if (!activeGroupHasConnectedAz100(live)) return
+                    clearHfpActiveDevice(live, "hfpActiveReasserted")
+                    reassertLeAudioOutput(live, "leaOutputReassertedAgain")
+                }
+            }, HFP_REASSERT_MS, TimeUnit.MILLISECONDS)
+            }
         }, EXCLUSIVE_SETTLE_MS, TimeUnit.MILLISECONDS);
     }
+
 
     /**
      * Takes the HFP active slot away from the earbud, so the audio policy
@@ -2057,20 +2458,22 @@ final class OplusDualModeCoexistHook {
      * the strategies stay on SCO for the duration of the call, which is what
      * would have happened anyway.
      */
-    private static void clearHfpActiveDevice(Object leaService, String reason) {
-        Object headset = headsetServiceOf(leaService);
+    private fun clearHfpActiveDevice(leaService: Any?, reason: String) {
+        if (inLeaYieldWindow()) return;
+        val headset = headsetServiceOf(leaService);
         if (headset == null) return;
         try {
             if (hfpCallAudioLive(headset)) {
                 noteOnce("hfpActiveKeptInCall");
                 return;
             }
-            XposedHelpers.callMethod(headset, "removeActiveDevice");
+            Reflect.callMethod(headset, "removeActiveDevice");
             noteOnce(reason);
-        } catch (Throwable t) {
+        } catch (t: Throwable) {
             Logs.trace("dual-coexist: HFP active clear failed - " + t);
         }
     }
+
 
     /**
      * Is HFP carrying call audio right now?
@@ -2079,17 +2482,18 @@ final class OplusDualModeCoexistHook {
      * else (including the {@code 10} of "disconnected") means the SCO link is
      * idle and safe to tear down.
      */
-    private static boolean hfpCallAudioLive(Object headsetService) {
+    private fun hfpCallAudioLive(headsetService: Any?): Boolean {
         if (headsetService == null) return false;
         try {
-            Object active = XposedHelpers.callMethod(headsetService, "getActiveDevice");
-            if (!(active instanceof BluetoothDevice)) return false;
-            Object state = XposedHelpers.callMethod(headsetService, "getAudioState", active);
-            return state instanceof Integer && ((Integer) state).intValue() == 12;
-        } catch (Throwable ignored) {
+            val active = Reflect.callMethod(headsetService, "getActiveDevice");
+            if (!(active is BluetoothDevice)) return false;
+            val state = Reflect.callMethod(headsetService, "getAudioState", active);
+            return state is Int && state == 12;
+        } catch (ignored: Throwable) {
             return false;
         }
     }
+
 
     /**
      * Tells AudioService, one last time, that LE Audio owns the output.
@@ -2116,28 +2520,43 @@ final class OplusDualModeCoexistHook {
      * <p>Its return value is the number of announcements it made; {@code 0} means
      * LE Audio had no active device at all, which is worth seeing in the log.
      */
-    private static void reassertLeAudioOutput(Object leaService, String reason) {
-        if (leaService == null) return;
+    private fun reassertLeAudioOutput(leaService: Any?, reason: String) {
+        if (leaService == null || inLeaYieldWindow()) return;
         try {
-            Object count = XposedHelpers.callMethod(leaService,
+            val count = Reflect.callMethod(leaService,
                     "sendPreferredAudioProfileChangeToAudioFramework");
             noteOnce(reason + "=" + count);
-        } catch (Throwable t) {
+        } catch (t: Throwable) {
             Logs.trace("dual-coexist: LE Audio output re-assert failed - " + t);
         }
     }
 
+
+    /** True only while the active AZ100 group is actually streaming. */
+    private fun leaOutputStreaming(leaService: Any?): Boolean {
+        if (leaService == null) return false;
+        try {
+            val status = Reflect.callMethod(leaService, "getGroupStatus");
+            // LeAudioStackEvent.GROUP_STREAM_STATUS_STREAMING and its VoIP state.
+            return status == 1 || status == 9;
+        } catch (ignored: Throwable) {
+            return false;
+        }
+    }
+
+
     /** The live {@code HeadsetService}, via the LE Audio service's own adapter. */
-    private static Object headsetServiceOf(Object leaService) {
+    private fun headsetServiceOf(leaService: Any?): Any? {
         if (leaService == null) return null;
         try {
-            Object adapter = XposedHelpers.callMethod(leaService, "getAdapterService");
+            val adapter = Reflect.callMethod(leaService, "getAdapterService");
             if (adapter == null) return null;
-            return optionalGet(XposedHelpers.callMethod(adapter, "getHeadsetService"));
-        } catch (Throwable ignored) {
+            return optionalGet(Reflect.callMethod(adapter, "getHeadsetService"));
+        } catch (ignored: Throwable) {
             return null;
         }
     }
+
 
     /**
      * LE Audio no longer owns the path -- let A2DP come back.
@@ -2149,45 +2568,54 @@ final class OplusDualModeCoexistHook {
      * {@link #EXCLUSIVE} would block A2DP for the rest of the process's life,
      * so the safe direction is always "release".
      */
-    private static void scheduleExclusiveExit() {
+    private fun scheduleExclusiveExit() {
         if (EXCLUSIVE.isEmpty() || exitScheduled) return;
         exitScheduled = true;
-        DEFERRED.schedule(() -> {
+        DEFERRED.schedule(object : Runnable {
+            override fun run() {
             try {
                 doExclusiveExit();
-            } catch (Throwable t) {
+            } catch (t: Throwable) {
                 Logs.trace("dual-coexist: LE Audio exclusive exit failed - " + t);
             } finally {
                 exitScheduled = false;
             }
+            }
         }, EXCLUSIVE_SETTLE_MS, TimeUnit.MILLISECONDS);
     }
 
-    private static void doExclusiveExit() {
-        Object lea = leaServiceRef;
-        Object a2dp = a2dpServiceOf(lea);
-        for (Map.Entry<String, BluetoothDevice> entry : EXCLUSIVE.entrySet()) {
-            BluetoothDevice device = entry.getValue();
+
+    private fun doExclusiveExit() {
+        if (inLeaYieldWindow()) {
+            abandonExclusiveHold();
+            return;
+        }
+        val lea = leaServiceRef;
+        val a2dp = a2dpServiceOf(lea);
+        for (entry in EXCLUSIVE.entries) {
+            val device = entry.value;
             if (a2dp == null) {
-                EXCLUSIVE.remove(entry.getKey());
+                EXCLUSIVE.remove(entry.key);
                 continue;
             }
-            // Only reconnect while the earbud is actually gone from LE Audio.
-            // If it is still LE-connected, the group going inactive was a
-            // transient and the stack is about to bring LE Audio back -- racing
-            // A2DP up against that would just flap the two against each other.
-            // The LE disconnect callback calls this again once it really leaves.
-            if (leDeviceConnected(lea, device)) {
-                noteOnce("leaExclusiveHeld@" + entry.getKey());
+            // A handoff clears bookkeeping without opening a phone A2DP link.
+            // Ordinary LE disconnects still restore the classic fallback.
+            if (inLeaYieldWindow()) {
+                abandonExclusiveHold();
+                return;
+            }
+            if (!LEA_HANDOFF.shouldReconnectClassic(
+                    SystemClock.elapsedRealtime(), leDeviceConnected(lea, device))) {
+                noteOnce("leaExclusiveHeld@" + entry.key);
                 continue;
             }
             // A2DP lives on the earbud's classic identity, not necessarily on the
             // one the LE Audio group was keyed by -- see a2dpPeerOf().  Asking
             // connect() for an LE-only address always fails.
-            BluetoothDevice target = a2dpPeerOf(device);
+            val target = a2dpPeerOf(device);
             if (target == null) {
-                EXCLUSIVE.remove(entry.getKey());
-                noteOnce("leaExclusiveNoA2dpPeer@" + entry.getKey());
+                EXCLUSIVE.remove(entry.key);
+                noteOnce("leaExclusiveNoA2dpPeer@" + entry.key);
                 continue;
             }
             // Mark the release before the call: connect() re-enters
@@ -2198,29 +2626,30 @@ final class OplusDualModeCoexistHook {
             // 2026-10-13, see A2DP_CONNECT and RELEASING.
             RELEASING.add(target.getAddress());
             try {
-                Object started = XposedHelpers.callMethod(a2dp, A2DP_CONNECT, target);
-                EXCLUSIVE.remove(entry.getKey());
-                noteOnce("leaExclusiveOff@" + entry.getKey());
+                val started = Reflect.callMethod(a2dp, A2DP_CONNECT, target);
+                EXCLUSIVE.remove(entry.key);
+                noteOnce("leaExclusiveOff@" + entry.key);
                 Logs.trace("dual-coexist: A2DP reconnect requested for "
                         + mask(target.getAddress()) + ", started=" + started);
-                if (Boolean.FALSE.equals(started)) {
+                if ((started == false)) {
                     // Accepted by the guard but the state machine declined (no
                     // A2DP Sink UUID, max devices, ...).  Nothing more to do.
-                    noteOnce("a2dpReconnectDeclined@" + entry.getKey());
+                    noteOnce("a2dpReconnectDeclined@" + entry.key);
                 }
-            } catch (Throwable t) {
+            } catch (t: Throwable) {
                 // Still never leave the entry behind -- a stuck entry blocks A2DP
                 // for the rest of the process's life, which is the failure this
                 // whole class exists to avoid.  Release it and retry once instead.
-                EXCLUSIVE.remove(entry.getKey());
+                EXCLUSIVE.remove(entry.key);
                 Logs.e("dual-coexist: A2DP reconnect failed", t);
-                noteOnce("a2dpReconnectFailed@" + entry.getKey());
-                retryA2dpConnect(a2dp, target, entry.getKey());
+                noteOnce("a2dpReconnectFailed@" + entry.key);
+                retryA2dpConnect(a2dp, target, entry.key);
             } finally {
                 RELEASING.remove(target.getAddress());
             }
         }
     }
+
 
     /**
      * One bounded second attempt at bringing A2DP back, after the first one
@@ -2228,45 +2657,49 @@ final class OplusDualModeCoexistHook {
      * second failure only leaves classic audio down until the next connect --
      * it cannot pin A2DP off the way a retained {@link #EXCLUSIVE} entry would.
      */
-    private static void retryA2dpConnect(final Object a2dp,
-                                         final BluetoothDevice device,
-                                         final String key) {
-        DEFERRED.schedule(() -> {
+    private fun retryA2dpConnect(a2dp: Any?, device: BluetoothDevice, key: String) {
+        DEFERRED.schedule(object : Runnable {
+            override fun run() {
+            if (inLeaYieldWindow()) return;
             RELEASING.add(key);
             try {
-                Object started = XposedHelpers.callMethod(a2dp, A2DP_CONNECT, device);
+                val started = Reflect.callMethod(a2dp, A2DP_CONNECT, device);
                 Logs.trace("dual-coexist: A2DP reconnect retry started=" + started);
                 noteOnce("a2dpReconnectRetried@" + key);
-            } catch (Throwable t) {
+            } catch (t: Throwable) {
                 Logs.e("dual-coexist: A2DP reconnect retry failed", t);
             } finally {
                 RELEASING.remove(key);
             }
+            }
         }, HFP_REASSERT_MS, TimeUnit.MILLISECONDS);
     }
 
+
     /** The live {@code A2dpService}, via the LE Audio service's own adapter. */
-    private static Object a2dpServiceOf(Object leaService) {
+    private fun a2dpServiceOf(leaService: Any?): Any? {
         if (leaService == null) return null;
         try {
-            Object adapter = XposedHelpers.callMethod(leaService, "getAdapterService");
+            val adapter = Reflect.callMethod(leaService, "getAdapterService");
             if (adapter == null) return null;
-            return optionalGet(XposedHelpers.callMethod(adapter, "getA2dpService"));
-        } catch (Throwable ignored) {
+            return optionalGet(Reflect.callMethod(adapter, "getA2dpService"));
+        } catch (ignored: Throwable) {
             return null;
         }
     }
 
+
     /** Is this device connected to LE Audio right now? */
-    private static boolean leDeviceConnected(Object leaService, BluetoothDevice device) {
+    private fun leDeviceConnected(leaService: Any?, device: BluetoothDevice): Boolean {
         if (leaService == null || device == null) return false;
         try {
-            Object state = XposedHelpers.callMethod(leaService, "getConnectionState", device);
-            return state instanceof Integer && ((Integer) state).intValue() == 2;
-        } catch (Throwable ignored) {
+            val state = Reflect.callMethod(leaService, "getConnectionState", device);
+            return state is Int && state == 2;
+        } catch (ignored: Throwable) {
             return false;
         }
     }
+
 
     /* ------------------------------------------------------------------ */
     /* 9. reconnect: clear the "already connected" early return            */
@@ -2302,79 +2735,87 @@ final class OplusDualModeCoexistHook {
      * the hook runs at method entry, before the method's own
      * {@code synchronized (this.mLock)} block is entered.
      */
-    private static void hookLeaConnectedUnstick(ClassLoader cl) {
+    private fun hookLeaConnectedUnstick(param: PackageParam) {
+        val cl = loader ?: return;
         try {
-            Class<?> adm = XposedHelpers.findClass(ACTIVE_DEVICE_MANAGER, cl);
-            XposedHelpers.findAndHookMethod(adm, "lambda$profileConnectionStateChanged$3",
-                    BluetoothDevice.class, new XC_MethodHook() {
-                        @Override protected void beforeHookedMethod(MethodHookParam param) {
-                            if (!isAz100Arg(param.args[0])) return;
-                            if (leaGroupHasAz100(param.thisObject)) return;
+            val adm = Reflect.findClass(ACTIVE_DEVICE_MANAGER, cl);
+            with(param) {
+                adm.resolve().optional(silent = true).firstMethod {
+                    name = "lambda\$profileConnectionStateChanged\$3"
+                    parameters(BluetoothDevice::class.java)
+                }.hook {
+                    before {
+                            if (!isAz100Arg(args[0])) return@before;
+                            if (leaGroupHasAz100(instanceOrNull)) return@before;
                             try {
-                                Object list = XposedHelpers.getObjectField(param.thisObject,
+                                val list = Reflect.getObjectField(instanceOrNull,
                                         "mLeAudioConnectedDevices");
-                                if (!(list instanceof List)) return;
-                                Object lock = XposedHelpers.getObjectField(param.thisObject, "mLock");
-                                boolean removed;
-                                synchronized (lock) {
-                                    removed = ((List<?>) list).remove(param.args[0]);
+                                if (!(list is List<*>)) return@before;
+                                val lock = Reflect.getObjectField(instanceOrNull, "mLock");
+                                var removed = false
+                                synchronized (lock!!) {
+                                    removed = (list as MutableList<Any?>).remove(args[0]);
                                 }
                                 if (removed) noteOnce("leaConnectedDedupCleared");
-                            } catch (Throwable ignored) {
+                            } catch (ignored: Throwable) {
                             }
                         }
-                    });
+                    }
+            }
             Logs.trace("dual-coexist: handleLeAudioConnected unstick installed");
-        } catch (Throwable t) {
+        } catch (t: Throwable) {
             Logs.e("dual-coexist: handleLeAudioConnected unstick failed", t);
             Logs.trace("dual-coexist: handleLeAudioConnected unstick FAILED - " + t);
         }
     }
 
+
     /* ------------------------------------------------------------------ */
 
-    private static void ensureClassicAllowed(Object extInstance, String adapterField,
-                                             BluetoothDevice device) {
-        if (Boolean.TRUE.equals(IN_FIX.get())) return;
-        IN_FIX.set(Boolean.TRUE);
+    private fun ensureClassicAllowed(extInstance: Any?, adapterField: String, device: BluetoothDevice) {
+        if ((IN_FIX.get() == true)) return;
+        IN_FIX.set(true);
         try {
-            Object adapter = XposedHelpers.getObjectField(extInstance, adapterField);
+            val adapter = Reflect.getObjectField(extInstance, adapterField);
             if (adapter == null) return;
             restore(adapter, device, PROFILE_HFP);
             restore(adapter, device, PROFILE_A2DP);
-        } catch (Throwable t) {
+        } catch (t: Throwable) {
             Logs.trace("dual-coexist: policy restore failed - " + t);
         } finally {
-            IN_FIX.set(Boolean.FALSE);
+            IN_FIX.set(false);
         }
     }
 
-    private static void restore(Object adapter, BluetoothDevice device, int profile) {
-        Object current = XposedHelpers.callMethod(adapter,
+
+    private fun restore(adapter: Any?, device: BluetoothDevice, profile: Int) {
+        val current = Reflect.callMethod(adapter,
                 "getProfileConnectionPolicy", device, profile);
-        if (current instanceof Integer && ((Integer) current).intValue() == POLICY_ALLOWED) {
+        if (current is Integer && (current as Int) == POLICY_ALLOWED) {
             return;
         }
-        XposedHelpers.callMethod(adapter, "setProfileConnectionPolicy",
+        Reflect.callMethod(adapter, "setProfileConnectionPolicy",
                 device, profile, POLICY_ALLOWED);
         Logs.trace("dual-coexist: profile " + profile + " ("
-                + (profile == PROFILE_HFP ? "hfp" : "a2dp") + ") "
+                + (if (profile == PROFILE_HFP) "hfp" else "a2dp") + ") "
                 + current + " -> " + POLICY_ALLOWED);
     }
 
-    private static boolean isAz100(BluetoothDevice device) {
+
+    private fun isAz100(device: BluetoothDevice): Boolean {
         if (device == null) return false;
-        String address = device.getAddress();
+        val address = device.getAddress();
         if (address == null) return false;
         if (Az100Hook.isAz100Mac(address)) return true;
-        if (Az100Hook.AZ100_LE_MAC.equalsIgnoreCase(address)) return true;
+        if (Az100Hook.AZ100_LE_MAC.equals(address, ignoreCase = true)) return true;
         try {
-            String name = device.getName();
+            val name = device.getName();
             return name != null && name.contains("EAH-AZ100");
-        } catch (Throwable ignored) {
+        } catch (ignored: Throwable) {
             return false;
         }
     }
+
 
     /**
      * Stops the ROM from crashing the whole Bluetooth process on a null device.
@@ -2465,22 +2906,24 @@ final class OplusDualModeCoexistHook {
      * every other connection down with it -- nothing about the fix is
      * earbud-specific.
      */
-    private static void hookNullDeviceProfileQuery(ClassLoader cl) {
-        hookNullDevice(cl, ADAPTER_SERVICE, "isProfileSupported",
-                new Class<?>[] {BluetoothDevice.class, int.class}, Boolean.FALSE, 0);
-        hookNullDevice(cl, ADAPTER_SERVICE, "getProfileConnectionPolicy",
-                new Class<?>[] {BluetoothDevice.class, int.class}, -1, 0);
-        hookNullDevice(cl, CONNECTABLE_PROFILE, "getConnectionPolicy",
-                new Class<?>[] {BluetoothDevice.class}, -1, 0);
-        hookNullDevice(cl, CONNECTABLE_PROFILE, "okToConnect",
-                new Class<?>[] {BluetoothDevice.class}, Boolean.TRUE, 0);
+    private fun hookNullDeviceProfileQuery(param: PackageParam) {
+        val cl = loader ?: return;
+        hookNullDevice(param, cl, ADAPTER_SERVICE, "isProfileSupported",
+                arrayOf<Class<*>>(BluetoothDevice::class.java, Integer.TYPE), false, 0);
+        hookNullDevice(param, cl, ADAPTER_SERVICE, "getProfileConnectionPolicy",
+                arrayOf<Class<*>>(BluetoothDevice::class.java, Integer.TYPE), -1, 0);
+        hookNullDevice(param, cl, CONNECTABLE_PROFILE, "getConnectionPolicy",
+                arrayOf<Class<*>>(BluetoothDevice::class.java), -1, 0);
+        hookNullDevice(param, cl, CONNECTABLE_PROFILE, "okToConnect",
+                arrayOf<Class<*>>(BluetoothDevice::class.java), true, 0);
         // The per-profile state lookups.  Each backs its table with a
         // ConcurrentHashMap, which rejects a null key outright.
-        for (String service : new String[] {A2DP_SERVICE, VCS_SERVICE, HEADSET_SERVICE}) {
-            hookNullDevice(cl, service, "getConnectionState",
-                    new Class<?>[] {BluetoothDevice.class}, 0, 0);
+        for (service in arrayOf(A2DP_SERVICE, VCS_SERVICE, HEADSET_SERVICE)) {
+            hookNullDevice(param, cl, service, "getConnectionState",
+                    arrayOf<Class<*>>(BluetoothDevice::class.java), 0, 0);
         }
     }
+
 
     /**
      * Refuses a null device on one method, returning a substitute result.
@@ -2490,29 +2933,31 @@ final class OplusDualModeCoexistHook {
      * missing on this ROM is skipped quietly -- these names come from
      * decompiled stock code, and a ROM revision is allowed to move them.
      */
-    private static void hookNullDevice(ClassLoader cl, String className, String method,
-                                       Class<?>[] signature, Object substitute, int deviceArg) {
+    private fun hookNullDevice(param: PackageParam, cl: ClassLoader, className: String, method: String, signature: Array<Class<*>>, substitute: Any?, deviceArg: Int) {
         try {
-            Class<?> clazz = XposedHelpers.findClass(className, cl);
-            java.lang.reflect.Method target = findMethod(clazz, method, signature);
+            val clazz = Reflect.findClass(className, cl);
+            val target = findMethod(clazz, method, signature);
             if (target == null) {
                 Logs.trace("dual-coexist: no such method " + simple(className) + "#" + method);
                 return;
             }
-            XposedBridge.hookMethod(target, new XC_MethodHook() {
-                @Override protected void beforeHookedMethod(MethodHookParam param) {
-                    if (param.args[deviceArg] != null) return;
-                    param.setResult(substitute);
-                    noteOnce("nullDevice@" + method);
+            with(param) {
+                target.hook {
+                    before {
+                        if (args[deviceArg] != null) return@before;
+                        result = substitute;
+                        noteOnce("nullDevice@" + method);
+                    }
                 }
-            });
+            }
             Logs.trace("dual-coexist: null guard on " + simple(className) + "#" + method);
-        } catch (Throwable t) {
+        } catch (t: Throwable) {
             // Absent on this ROM build, or already hooked: neither is fatal.
             Logs.trace("dual-coexist: no null guard for " + simple(className) + "#" + method
                     + " - " + t);
         }
     }
+
 
     /**
      * Resolves a method by name and parameter types, walking up the hierarchy.
@@ -2527,48 +2972,196 @@ final class OplusDualModeCoexistHook {
      *
      * @return the method, or {@code null} when this ROM build does not have it
      */
-    private static java.lang.reflect.Method findMethod(Class<?> clazz, String name,
-                                                       Class<?>[] signature) {
-        for (Class<?> c = clazz; c != null; c = c.getSuperclass()) {
+    private fun findMethod(clazz: Class<*>, name: String, signature: Array<Class<*>>): java.lang.reflect.Method? {
+        var c: Class<*>? = clazz
+        while (c != null) {
             try {
-                return c.getDeclaredMethod(name, signature);
-            } catch (NoSuchMethodException ignored) {
+                return c.getDeclaredMethod(name, *signature);
+            } catch (ignored: NoSuchMethodException) {
                 // keep walking up
             }
+            c = c.superclass
         }
         return null;
     }
 
-    private static String simple(String className) {
-        int dot = className.lastIndexOf('.');
-        return dot < 0 ? className : className.substring(dot + 1);
+
+    private fun simple(className: String): String {
+        val dot = className.lastIndexOf('.');
+        return if (dot < 0) className else className.substring(dot + 1);
     }
 
-    private static boolean isAz100Arg(Object arg) {
-        return arg instanceof BluetoothDevice && isAz100((BluetoothDevice) arg);
+
+    private fun isAz100Arg(arg: Any?): Boolean {
+        return arg is BluetoothDevice && isAz100((arg as BluetoothDevice));
     }
+
+
+    /** Yielding ends through native MEDIA availability or explicit local selection. */
+    private fun inLeaYieldWindow(): Boolean {
+        return LEA_HANDOFF.isYielding(SystemClock.elapsedRealtime());
+    }
+
+
+    /** Keep a confirmed remote owner until native MEDIA returns or local selection. */
+    private fun yieldLeaToRemote(groupId: Int, reason: String) {
+        if (groupId == -1) return;
+        val alreadyRemote = LEA_HANDOFF.isRemoteYielding();
+        LEA_HANDOFF.yieldRemotely(groupId, SystemClock.elapsedRealtime());
+        if (!alreadyRemote) {
+            Logs.trace("dual-coexist: remote handoff, group=" + groupId + " (" + reason + ")");
+        }
+        openLeaYieldWindow(reason);
+    }
+
+
+    private fun resumeLeaLocally() {
+        val wasYielding = inLeaYieldWindow();
+        LEA_HANDOFF.resumeLocally();
+        if (wasYielding) Logs.trace("dual-coexist: handoff ended by local selection");
+    }
+
+
+    /**
+     * Open -- or re-arm -- the window, and say so once in the trace.
+     *
+     * <p>Both real releases funnel here: the vendor handing the active path back
+     * to a classic profile ({@code removeActiveDevice(true)}), and an active group
+     * going inactive while an AZ100 is still on LE Audio.
+     */
+    private fun openLeaYieldWindow(reason: String) {
+        // Re-arm on every sighting so a long hand-over does not time out mid-way,
+        // but only announce the first one -- the hooks can reach here in a burst.
+        val alreadyOpen = inLeaYieldWindow();
+        LEA_HANDOFF.yieldTemporarily(SystemClock.elapsedRealtime());
+        if (!alreadyOpen) {
+            Logs.trace("dual-coexist: leaYieldWindow opened (" + reason + ")");
+        }
+        // Release only the local guard. Connecting phone A2DP here would take
+        // the headset back from the computer during the handoff.
+        abandonExclusiveHold();
+    }
+
+
+    /** Release the local exclusive guard without dialing the headset again. */
+    private fun abandonExclusiveHold() {
+        if (EXCLUSIVE.isEmpty()) return;
+        EXCLUSIVE.clear();
+        noteOnce("leaExclusiveAbandoned");
+    }
+
+
+    /**
+     * True while the stack activated LE Audio for an AZ100 recently enough that a
+     * release right after it is the ROM's own dual-mode bookkeeping rather than a
+     * hand-over to another host.
+     *
+     * <p>This is what keeps the yield window off the normal hand-over: measured
+     * 16:07, the classic-active-device callback revokes LE Audio 199 ms after the
+     * module activates it, and that revoke must not open the window.
+     */
+    private fun leaActivatedRecently(): Boolean {
+        val activatedAt = leaActiveAt;
+        return activatedAt != 0L
+                && SystemClock.elapsedRealtime() - activatedAt <= LEA_HOLD_WINDOW_MS;
+    }
+
+
+    /**
+     * Is either AZ100 identity on LE Audio right now?
+     *
+     * <p>Connecting counts.  The release that matters arrives while the group is
+     * still forming -- measured 2026-10-13, {@code groupSwitch.apiRequest} landed
+     * at 22:24:25 while LE Audio only reached {@code CONNECTED} at 22:24:27.
+     *
+     * <p>Both addresses are asked directly instead of walking
+     * {@code getGroupDevices()}: at release time a group lookup answers for the
+     * <em>active</em> group only, and inactive is exactly the state being detected.
+     */
+    private fun az100LeaPresent(leaService: Any?): Boolean {
+        if (leaService == null) return false;
+        try {
+            val adapter = android.bluetooth.BluetoothAdapter.getDefaultAdapter();
+            if (adapter == null) return false;
+            for (mac in arrayOf(Az100Hook.AZ100_MAC, Az100Hook.AZ100_LE_MAC)) {
+                val device = try {
+                    adapter.getRemoteDevice(mac);
+                } catch (ignored: IllegalArgumentException) {
+                    continue;
+                }
+                val state = Reflect.callMethod(leaService, "getConnectionState", device);
+                if (state is Int && (state == 1 || state == 2)) {
+                    return true;
+                }
+            }
+        } catch (ignored: Throwable) {
+            // No adapter, no state: answer "not present" and let the caller behave
+            // exactly as it did before this window existed.
+        }
+        return false;
+    }
+
+
+    /**
+     * Decide whether a deliberate teardown of the active group is a hand-over to
+     * another host, and if it is, open {@link #LEA_YIELD_WINDOW_MS}.
+     *
+     * <p>The teardown reaches {@code setActiveGroupWithDevice(null, hasFallback)}
+     * through {@code removeActiveDevice(hasFallback)}, and that call has two very
+     * different meanings:
+     *
+     * <ul>
+     *   <li>{@code removeActiveDevice(true)} -- the vendor jar handing the slot to
+     *       a classic profile.  This is the hand-over: the earbud is moving to
+     *       the other host and the module must not fight it.  {@code hasFallback}
+     *       is {@code true}.</li>
+     *   <li>{@code setActiveDevice(null)} -&gt; {@code removeActiveDevice(false)} --
+     *       the user handed the output to the phone speaker.  Nothing left the
+     *       phone, so there is no yield: {@code hasFallback} is {@code false} and
+     *       no AZ100 is on LE Audio.</li>
+     * </ul>
+     *
+     * <p>A release that lands right after the module activated LE Audio is the
+     * ROM's own dual-mode bookkeeping, not a hand-over -- see
+     * {@link #leaActivatedRecently} -- so it never opens the window either.
+     */
+    private fun beginYieldOnApiRelease(leaService: Any?, hasFallback: Any?) {
+        val recent = leaActivatedRecently();
+        val present = az100LeaPresent(leaService);
+        if (!recent && present) {
+            Logs.trace("dual-coexist: yieldOnRelease fallback=" + hasFallback
+                    + " present=" + present);
+            openLeaYieldWindow("apiRelease");
+        } else {
+            Logs.trace("dual-coexist: yieldOnRelease skipped recent=" + recent
+                    + " fallback=" + hasFallback + " present=" + present);
+        }
+    }
+
 
     /** One line per address per reason per process; the hook itself is a hot path. */
-    private static void note(BluetoothDevice device, String reason) {
-        String address = device.getAddress();
+    private fun note(device: BluetoothDevice, reason: String) {
+        val address = device.getAddress();
         if (address != null && REPORTED.add(reason + '@' + address)) {
             Logs.trace("dual-coexist: " + mask(address) + " marked LEA-coexistent (" + reason + ")");
         }
     }
 
+
     /** Same, for events that carry no address. */
-    private static void noteOnce(String reason) {
+    private fun noteOnce(reason: String) {
         if (REPORTED.add(reason)) {
             Logs.trace("dual-coexist: " + reason);
         }
     }
 
+
     /**
      * Never log a full address: the module's own traces stay redacted.  See
      * {@code AGENTS.md} -- Bluetooth addresses are device-specific data.
      */
-    private static String mask(String address) {
-        if (address == null || address.length() < 5) return "?";
-        return "**:**:**" + address.substring(address.length() - 5);
+    private fun mask(address: String?): String? {
+        if (address == null || address.length < 5) return "?";
+        return "**:**:**" + address.substring(address.length - 5);
     }
 }
