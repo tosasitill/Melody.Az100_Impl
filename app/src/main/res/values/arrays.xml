@@ -1,6 +1,7 @@
 <resources>
-    <!-- LSPosed recommended scope. Only Melody is injected. -->
+    <!-- Same two packages as META-INF/xposed/scope.list. -->
     <string-array name="xposed_scope">
         <item>com.oplus.melody</item>
+        <item>com.android.bluetooth</item>
     </string-array>
 </resources>

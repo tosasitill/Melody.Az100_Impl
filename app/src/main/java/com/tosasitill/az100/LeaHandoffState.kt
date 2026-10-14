@@ -17,6 +17,34 @@ internal class LeaHandoffState(private val yieldWindowMs: Long) {
         return now >= openedAt && now - openedAt <= yieldWindowMs
     }
 
+    /**
+     * An API release without a confirmed remote owner must not keep blocking a
+     * later explicit phone connection. Confirmed remote ownership still waits
+     * for native MEDIA or that selection.
+     */
+    @Synchronized
+    fun shouldSuppressAutoConnect(now: Long): Boolean {
+        if (remoteGroupId != null) return true
+        val openedAt = yieldAt ?: return false
+        return now >= openedAt && now - openedAt <= AUTO_CONNECT_SUPPRESS_MS
+    }
+
+    /** Releasing an already inactive group is normal connection bookkeeping. */
+    @Synchronized
+    fun onApiRelease(activeGroupId: Int, az100Present: Boolean, recentlyActivated: Boolean, now: Long): Boolean {
+        if (activeGroupId == -1 || !az100Present || recentlyActivated) return false
+        yieldTemporarily(now)
+        return true
+    }
+
+    /** Only an actual active-to-inactive transition can extend a handoff. */
+    @Synchronized
+    fun onGroupDeactivated(previousGroupId: Int, az100Present: Boolean, now: Long): Boolean {
+        if (previousGroupId == -1 || !az100Present) return false
+        yieldTemporarily(now)
+        return true
+    }
+
     @Synchronized
     fun isRemoteYielding(): Boolean = remoteGroupId != null
 
@@ -83,5 +111,6 @@ internal class LeaHandoffState(private val yieldWindowMs: Long) {
         const val MEDIA_CONTEXT = 0x0004
         const val LE_TRANSPORT = 2
         const val REMOTE_LOW_RESOURCES = 0x14
+        const val AUTO_CONNECT_SUPPRESS_MS = 8_000L
     }
 }

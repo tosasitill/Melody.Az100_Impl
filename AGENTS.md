@@ -2,14 +2,14 @@
 
 ## Project Structure
 
-This repository contains one Android module, `app/`. Java hooks and Airoha protocol code live in `app/src/main/java/com/tosasitill/az100/`; the native LE Audio patch is `app/src/main/cpp/az100_patch.c` with its checked-in `app/src/main/jniLibs/arm64-v8a/libaz100patch.so`. Strings and arrays are in `app/src/main/res/values/`, and `app/src/main/assets/xposed_init` registers the LSPosed entry point.
+This repository contains one Android module, `app/`. Kotlin hooks and Airoha protocol code live in `app/src/main/java/com/tosasitill/az100/`; the native LE Audio patch is `app/src/main/cpp/az100_patch.c` with its checked-in `app/src/main/jniLibs/arm64-v8a/libaz100patch.so`. Strings and arrays are in `app/src/main/res/values/`, and `app/src/main/resources/META-INF/xposed/java_init.list` registers `ModernXposedEntry` through libxposed API 102. KavaRef selects members; `HookRuntime` installs hooks and `HookCall` carries invocation state.
 
-`Az100Hook` loads two scopes:
+`ModernXposedEntry` loads two scopes:
 
 - `com.oplus.melody`: volume tile, ANC, and battery.
 - `com.android.bluetooth`: LE Audio transport, UUID splice, native gate, BASS null fix, and the direct `connectLeAudio()` path.
 
-Read `README.md` for current runtime behavior and `docs-audio-connect.md` for the RACE frames. Dated reports under the repository root are evidence logs; `README.md` wins when they disagree. There are currently no test source directories.
+Read `README.md` for current runtime behavior and `docs-audio-connect.md` for the RACE frames. Dated reports under the repository root are evidence logs; `README.md` wins when they disagree. JVM tests under `app/src/test/java` cover protocol parsing, hook callback semantics, connection gates, and handoff state.
 
 ## Build and Test
 
@@ -17,7 +17,7 @@ Use JDK 21 and an installed Gradle/Android SDK. JDK 25/26 fails in `JdkImageTran
 
 - `gradle :app:assembleDebug` builds `app/build/outputs/apk/debug/app-debug.apk`.
 - `gradle :app:assembleRelease` builds the release APK.
-- `gradle :app:testDebugUnitTest` runs local unit tests when tests are added.
+- `gradle :app:testDebugUnitTest` runs the JVM regression tests.
 
 For Melody-only changes, install the module, enable it in LSPosed, force-stop `com.oplus.melody`, and inspect `adb logcat -s AZ100:V`. For Bluetooth changes, also scope `com.android.bluetooth` and restart that process; its reliable log is `/data/misc/bluetooth/az100.log`.
 
@@ -27,9 +27,9 @@ Add JVM tests under `app/src/test/java` (named `*Test`) for parsers or state log
 
 ## Style and Boundaries
 
-Follow the existing Java 17 style: four-space indentation, braces on the same line, `UpperCamelCase` class names, `lowerCamelCase` methods, and `UPPER_SNAKE_CASE` constants. Keep package names under `com.tosasitill.az100`; no formatter or linter is configured.
+Follow the existing Kotlin style targeting JVM 17: four-space indentation, braces on the same line, `UpperCamelCase` class names, `lowerCamelCase` methods, and `UPPER_SNAKE_CASE` constants. Keep package names under `com.tosasitill.az100`; no formatter or linter is configured.
 
-Keep the two runtime boundaries separate. Melody hooks must not depend on the Bluetooth-process classes being loaded, and Bluetooth hooks must not open the Airoha SPP link. Do not add a dependency on Technics Audio Connect.
+Keep the two runtime boundaries separate. Melody hooks must not depend on the Bluetooth-process classes being loaded, and Bluetooth hooks must not open the Airoha SPP link. Do not add a dependency on Technics Audio Connect. Share settings through libxposed remote preferences; do not restore world-readable files or legacy Xposed/YukiHookAPI entry points.
 
 `DIAGNOSE` only controls logging. Do not put a behavior hook behind it. `SPLICE_LE_AUDIO_UUIDS` must remain installed when diagnosis is off.
 

@@ -13,14 +13,13 @@ import android.widget.TextView
  * The module's settings page.
  *
  * LSPosed opens this from the module list, and it is also the module's launcher
- * activity.  Built in code rather than from a layout resource: the module's only
- * compile-time dependency is the Xposed API, so there is no appcompat theme to
- * inflate against.  The visual pieces come from [Ui], which the Melody detail page
+ * activity. Built in code rather than from a layout resource, without an
+ * appcompat theme. The visual pieces come from [Ui], which the Melody detail page
  * shares, so the two entry points stay identical.
  *
- * Every switch writes straight through to [Prefs].  The hooks read that file on each
- * connection, so a change takes effect on the next connect with no restart; nothing
- * is cached across processes.
+ * Every switch writes through [Prefs] to private storage and framework remote
+ * preferences. Hooks receive updates without a restart; connection behavior is
+ * applied on the next connect.
  */
 class MainActivity : Activity() {
 
@@ -35,12 +34,10 @@ class MainActivity : Activity() {
         prefs = try {
             Prefs.open(this)
         } catch (t: Throwable) {
-            // MODE_WORLD_READABLE refused by the ROM.  Say so instead of showing
-            // switches that cannot work.
             setContentView(
                 Ui.errorScreen(
-                    this, palette, "无法写入配置",
-                    "系统拒绝了 MODE_WORLD_READABLE。开关无法保存，模块也不会读到它们。", t
+                    this, palette, "无法读取配置",
+                    "配置未能打开，请重新启动模块设置。", t
                 )
             )
             return
@@ -131,8 +128,9 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         )
 
-        statusPill = Ui.pill(this, palette, "已加载").also {
-            Ui.setPill(it, palette, true, "已加载")
+        statusPill = Ui.pill(this, palette, "服务未连接").also {
+            val connected = Prefs.frameworkConnected
+            Ui.setPill(it, palette, connected, if (connected) "服务已连接" else "服务未连接")
             header.addView(it)
         }
         root.addView(header)
@@ -152,7 +150,7 @@ class MainActivity : Activity() {
         val toggle = Ui.Toggle(this, palette)
         toggle.setChecked(prefs.getBoolean(key, fallback))
         toggle.setOnChange { checked ->
-            val ok = prefs.edit().putBoolean(key, checked).commit()
+            val ok = Prefs.save(this, key, checked)
             statusPill?.let { Ui.setPill(it, palette, ok, if (ok) "已保存" else "保存失败") }
         }
         card.addView(Ui.row(this, palette, label, summary, toggle))

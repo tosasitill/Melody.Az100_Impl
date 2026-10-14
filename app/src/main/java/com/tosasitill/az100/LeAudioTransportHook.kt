@@ -1,6 +1,5 @@
 package com.tosasitill.az100
 
-import android.app.AndroidAppHelper
 import android.app.Application
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
@@ -9,8 +8,6 @@ import android.os.Build
 import android.os.ParcelUuid
 import android.provider.Settings
 import com.highcapable.kavaref.KavaRef.Companion.resolve
-import com.highcapable.yukihookapi.hook.param.HookParam
-import com.highcapable.yukihookapi.hook.param.PackageParam
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -90,8 +87,8 @@ import java.util.concurrent.ConcurrentHashMap
  * enforcing SELinux and cannot write into `/data/misc/bluetooth`
  * (`bluetooth_data_file`), while a JNI property read costs the Bluetooth process
  * nothing and needs no [Context].  `Settings.Global` was tried first and abandoned:
- * `AndroidAppHelper.currentApplication()` returns null in this process, so the
- * content resolver is unreachable.  `macos/az100-routeb.sh` wraps the quoting,
+ * `AndroidAppHelper.currentApplication()` returned null in that implementation,
+ * so the content resolver was unreachable. `macos/az100-routeb.sh` wraps the quoting,
  * which matters -- `adb shell setprop` splits on spaces and silently does nothing.
  *
  * The action runs through the ordinary [BluetoothDevice] API from inside the
@@ -582,7 +579,7 @@ object LeAudioTransportHook {
     @Volatile
     private var ticks = 0
 
-    fun install(param: PackageParam) {
+    fun install(param: HookRuntime) {
         if (!ENABLED) return
         val classLoader = param.appClassLoader ?: return
         synchronized(this) {
@@ -590,7 +587,6 @@ object LeAudioTransportHook {
             installed = true
             loader = classLoader
         }
-        Prefs.attach(param.prefs)
         // XposedBridge.log never lands when it is called from a binder thread, and
         // createBond/sendUuidsInternal both run on one.  Mirroring to a file the
         // Bluetooth process owns is the only channel that always works.
@@ -628,7 +624,7 @@ object LeAudioTransportHook {
     /* the behaviour change                                                */
     /* ------------------------------------------------------------------ */
 
-    private fun hookBondEntryPoints(param: PackageParam) {
+    private fun hookBondEntryPoints(param: HookRuntime) {
         val classLoader = loader ?: return
         val service = try {
             Reflect.findClass(ADAPTER_SERVICE, classLoader)
@@ -648,7 +644,7 @@ object LeAudioTransportHook {
      * `hookAllMethods` by name: every declared overload on the class itself, which
      * is why this is `hookAll` and not a single `hook`.
      */
-    private fun hookTransport(param: PackageParam, clazz: Class<*>, method: String) {
+    private fun hookTransport(param: HookRuntime, clazz: Class<*>, method: String) {
         try {
             with(param) {
                 clazz.resolve().optional(silent = true).method { name = method }
@@ -662,7 +658,7 @@ object LeAudioTransportHook {
         }
     }
 
-    private fun rewriteTransport(where: String, param: HookParam) {
+    private fun rewriteTransport(where: String, param: HookCall) {
         val args = param.args
         if (args.size < 2) return
         val device = args[0] as? BluetoothDevice ?: return
@@ -699,7 +695,7 @@ object LeAudioTransportHook {
      * ordered broadcast goes out, so the hook still sees the request even if a vendor
      * branch ends up swallowing the broadcast.
      */
-    private fun hookPairingRequest(param: PackageParam) {
+    private fun hookPairingRequest(param: HookRuntime) {
         val classLoader = loader ?: return
         try {
             val machine = Reflect.findClass(BOND_STATE_MACHINE, classLoader)
@@ -742,10 +738,10 @@ object LeAudioTransportHook {
      *    "the hook worked" apart from "the value never reached the stack".
      *
      * Order matters: the package-manager hook must be in place before
-     * `AdapterService.onCreate` runs.  `handleLoadPackage` fires at process attach,
-     * which is strictly earlier, so the ordering is safe.
+     * `AdapterService.onCreate` runs. `onPackageReady` installs this before
+     * `Application.attach`, so the ordering is safe.
      */
-    private fun hookConsentBypass(param: PackageParam) {
+    private fun hookConsentBypass(param: HookRuntime) {
         val classLoader = loader ?: return
         try {
             val manager = Reflect.findClass(
@@ -998,7 +994,7 @@ object LeAudioTransportHook {
      * `sendUuidsInternal` answers "did `0x184E` ever reach the profile manager, and by
      * which route" without guessing.
      */
-    private fun hookUuidPipeline(param: PackageParam) {
+    private fun hookUuidPipeline(param: HookRuntime) {
         val classLoader = loader ?: return
         var properties: Class<*>? = null
         try {
@@ -1129,7 +1125,7 @@ object LeAudioTransportHook {
      * switch, which meant turning the diagnostic switch off also disabled the volume
      * fix -- measured 2026-10-13, see [hookVolumeBehavior].
      */
-    private fun hookVolumeBehavior(param: PackageParam) {
+    private fun hookVolumeBehavior(param: HookRuntime) {
         val classLoader = loader ?: return
         val service = try {
             Reflect.findClass(VOLUME_CONTROL_SERVICE, classLoader)
@@ -1232,7 +1228,7 @@ object LeAudioTransportHook {
      * nothing here feeds a later decision, it only records what the stack was about to
      * push.
      */
-    private fun hookVolumeDiagnostics(param: PackageParam) {
+    private fun hookVolumeDiagnostics(param: HookRuntime) {
         val classLoader = loader ?: return
         val service = try {
             Reflect.findClass(VOLUME_CONTROL_SERVICE, classLoader)
@@ -1296,7 +1292,7 @@ object LeAudioTransportHook {
      * `restoreGrouVPolume`'s Java-side cache updates and AudioManager side effects still
      * run; only the redundant GATT write disappears.
      */
-    private fun hookVolumeWriteGuard(param: PackageParam) {
+    private fun hookVolumeWriteGuard(param: HookRuntime) {
         val classLoader = loader ?: return
         val iface = try {
             Reflect.findClass(VOLUME_CONTROL_NATIVE_INTERFACE, classLoader)
@@ -1345,7 +1341,7 @@ object LeAudioTransportHook {
      * What the `before` half of [hookVolumeWriteGuard] leaves for its `after` half.
      *
      * The old code used `MethodHookParam.setObjectExtra`, whose storage lives on the
-     * `MethodHookParam` instance Xposed keeps for the duration of one call.  Yuki's
+     * `MethodHookParam` instance Xposed keeps for the duration of one call. Yuki's
      * `dataExtra` cannot stand in: `before` and `after` get *different* `paramId`s
      * (`beforeHookId` / `afterHookId`), so it would read back an empty bundle and
      * silently stop recording successful pushes.
@@ -1359,7 +1355,7 @@ object LeAudioTransportHook {
 
     private val pendingPush = ThreadLocal<PendingPush?>()
 
-    private fun guardVolumeWrite(param: HookParam) {
+    private fun guardVolumeWrite(param: HookCall) {
         val args = param.args
         if (args.size < 2) return
         val wanted = args[1] as? Int ?: return
@@ -1404,7 +1400,7 @@ object LeAudioTransportHook {
         pendingPush.set(PendingPush(members, stock))
     }
 
-    private fun rememberStockPush(param: HookParam) {
+    private fun rememberStockPush(param: HookCall) {
         val pending = pendingPush.get() ?: return
         pendingPush.remove()
         if (param.hasThrowable == true) return
@@ -1828,7 +1824,7 @@ object LeAudioTransportHook {
         return sb.toString()
     }
 
-    private fun spliceLeAudioUuid(param: PackageParam, properties: Class<*>) {
+    private fun spliceLeAudioUuid(param: HookRuntime, properties: Class<*>) {
         try {
             with(param) {
                 properties.resolve().optional(silent = true).method { name = "setUuidsLe" }
@@ -1858,7 +1854,7 @@ object LeAudioTransportHook {
      * discovery and when it replays `ServiceLe` from `bt_config.conf` at start-up, so a
      * restart is enough to re-arm it.
      */
-    private fun spliceIntoLeUuids(param: HookParam) {
+    private fun spliceIntoLeUuids(param: HookCall) {
         val args = param.args
         if (args.isEmpty()) return
         val incoming = args[0] as? Array<*> ?: return
@@ -1939,7 +1935,7 @@ object LeAudioTransportHook {
     /* the adb-driven console                                              */
     /* ------------------------------------------------------------------ */
 
-    private fun startConsole(param: PackageParam) {
+    private fun startConsole(param: HookRuntime) {
         val classLoader = loader ?: return
         try {
             with(param) {
@@ -2110,7 +2106,7 @@ object LeAudioTransportHook {
 
     private fun context(): Context? {
         try {
-            val application = AndroidAppHelper.currentApplication()
+            val application = RuntimeEnvironment.application
             if (application != null) return application
         } catch (t: Throwable) {
             // fall through to the ActivityThread lookup
@@ -2224,6 +2220,8 @@ object LeAudioTransportHook {
             }
 
             "status" -> status(adapter)
+            "prefs" -> "auto_lea=${Prefs.autoLea}, twin_auto_connect=${Prefs.twin}, " +
+                    "volume_fix=${Prefs.volumeFix}, diagnose=${Prefs.diagnose}"
 
             // Which ROM methods tolerate a null device?  Measured, not guessed.
             "nullprobe" -> nullProbe()
@@ -2383,7 +2381,7 @@ object LeAudioTransportHook {
      * issues a connect for the second address -- the scan sees it and drops it as
      * "known" every few seconds instead.
      */
-    private fun hookLeAudioTwin(param: PackageParam) {
+    private fun hookLeAudioTwin(param: HookRuntime) {
         val classLoader = loader ?: return
         try {
             val lea = Reflect.findClass(LE_AUDIO_SERVICE, classLoader)

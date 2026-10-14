@@ -78,7 +78,7 @@ class Az100ConfigProvider : ContentProvider() {
             // success line as soon as this returns.  apply() defers the disk write
             // to a background thread, so the caller could read back its own change
             // before it landed -- and a crash in between would lose it.
-            open().edit().putBoolean(key, extras.getBoolean(EXTRA_VALUE)).commit()
+            Prefs.save(context ?: return false, key, extras.getBoolean(EXTRA_VALUE))
         } catch (t: Throwable) {
             Logs.e("config: write failed for $key", t)
             false

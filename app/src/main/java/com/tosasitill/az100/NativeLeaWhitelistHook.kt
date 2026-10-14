@@ -5,7 +5,6 @@ import android.bluetooth.BluetoothDevice
 import android.os.Handler
 import android.os.Looper
 import com.highcapable.kavaref.KavaRef.Companion.resolve
-import com.highcapable.yukihookapi.hook.param.PackageParam
 
 /**
  * Registers the AZ100 into OPPO's native LE Audio whitelist, so the Bluetooth
@@ -97,7 +96,7 @@ object NativeLeaWhitelistHook {
     @Volatile
     private var interopUtil: Any? = null
 
-    fun install(param: PackageParam) {
+    fun install(param: HookRuntime) {
         if (!ENABLED) return
         val classLoader = param.appClassLoader ?: return
         synchronized(lock) {
@@ -119,7 +118,7 @@ object NativeLeaWhitelistHook {
      * later and asynchronously.  Rather than hooking a second, jadx-renamed
      * method, retry a few times; the write is idempotent.
      */
-    private fun hookAdapterServiceCreate(param: PackageParam) {
+    private fun hookAdapterServiceCreate(param: HookRuntime) {
         val classLoader = loader ?: return
         try {
             with(param) {

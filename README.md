@@ -1,6 +1,6 @@
 # Technics EAH-AZ100 适配
 
-LSPosed 模块，当前版本 **2.0.3**（versionCode 36）。它做两件分开的事：
+LSPosed 模块，当前版本 **2.0.8**（versionCode 42）。它做两件分开的事：
 
 - 在 `com.oplus.melody` 里应答音量面板，并用自带的 Airoha SPP/RACE 读写降噪和电量。
 - 在 `com.android.bluetooth` 里让 AZ100 走 LE Audio（LC3），并让系统设置出现 LE Audio 开关。
@@ -16,11 +16,13 @@ export JAVA_HOME=/opt/homebrew/Cellar/openjdk@21/21.0.12.1/libexec/openjdk.jdk/C
 gradle :app:assembleDebug -Dorg.gradle.java.home="$JAVA_HOME"
 ```
 
-输出：`app/build/outputs/apk/debug/app-debug.apk`。
+输出：`app/build/outputs/apk/debug/app-debug.apk`。运行 `gradle :app:testDebugUnitTest :app:assembleRelease` 可执行 JVM 回归测试并生成未签名 release APK。
 
 JDK 25/26 会在 `JdkImageTransform` 失败。
 
 ## LSPosed
+
+模块使用 libxposed 现代入口 `ModernXposedEntry`，通过 `META-INF/xposed/java_init.list` 注册；KavaRef 负责查找成员，libxposed API 102 负责安装 hook。APK 不再包含 legacy `xposed_init` 或 YukiHookAPI 入口。已在 LSPosed **2.2.1 (7912) / API 102** 验证，声明最低 API 101，但尚未实测 API 101。
 
 1. 安装并启用模块。
 2. 作用域勾 `com.oplus.melody` 和 `com.android.bluetooth`。
@@ -41,7 +43,7 @@ adb logcat -s AZ100:V
 adb shell su -c 'cat /data/misc/bluetooth/az100.log'
 ```
 
-蓝牙进程里的 `XposedBridge.log` 经常丢，以 `az100.log` 为准。
+启动日志同时记录到 logcat、libxposed logger 和进程文件，详细日志关闭时也记录入口加载和 hook 数量。蓝牙进程以 `/data/misc/bluetooth/az100.log` 为准；Melody 文件日志在 `/sdcard/Android/data/com.oplus.melody/files/az100.log`。
 
 ## 音量面板和电量
 
@@ -67,15 +69,16 @@ adb shell su -c 'cat /data/misc/bluetooth/az100.log'
 
 「自动切换到 LE Audio」是下面那个问题的出口：用系统详情页的 LE Audio 开关关掉 LEA 后，ROM 会把音频回退到 LDAC，而 `onRemoteUuidsUpdated` 随后触发 `hookDirectLeaConnect`，把设备又升级回 LEA。关掉这个开关即可停止该行为，系统自带的 LE Audio 开关仍然有效。
 
-配置存在 LSPosed 重定向后的位置，权限 `0664`：
+模块应用使用 `MODE_PRIVATE` 保存本地配置，并通过 `XposedServiceHelper` 把四个开关发布到 LSPosed remote preferences。蓝牙和 Melody hook 直接读取框架提供的 remote preferences，不依赖模块应用常驻，也不需要跨 UID 读取配置文件。
 
+模块设置页和 Melody 的设置入口都调用 `Prefs.save()`；本地与框架设置同步提交成功后才显示保存成功。`Az100ConfigProvider.call()` 保留为 Melody 的设置接口。
+
+修改会同步到已运行的目标进程；连接类开关在下次连接时应用，不需要重启蓝牙或手机。可通过控制台检查蓝牙进程实际读到的值：
+
+```bash
+adb shell su -c 'setprop debug.az100.action prefs'
+adb shell su -c 'tail -n 8 /data/misc/bluetooth/az100.log'
 ```
-/data/misc/apexdata/<uuid>/prefs/com.tosasitill.az100/az100.xml
-```
-
-不是模块自己的 data 目录 —— 那里没有 `shared_prefs`，这是实测结果。蓝牙进程用 `XSharedPreferences` 直接读文件（它不能 bind 到模块，钩子必须在模块没运行时也能工作）；Melody 进程用不了文件（不同 UID，目录 `0700`），走 `Az100ConfigProvider.call()` 由模块代写。写入用 `commit()`，因为调用方是另一个进程，`apply()` 的异步落盘会让「已保存」撒谎。
-
-改动在下次连接时生效，不需要重启蓝牙或重启手机。
 
 ## LE Audio
 
@@ -108,13 +111,15 @@ OPPO 自家耳机的直连入口是 `OplusDualModeManagerImpl.onRemoteUuidsUpdat
 
 ### 手机 LE Audio 与电脑交接
 
-电脑连接时，耳机仍可能保持手机的 LE ACL；这不代表手机仍拥有媒体流。模块监听 MEDIA 上下文撤回、blocked-media 建议、group 主动停用，以及耳机用 HCI `0x14` 释放 LE 资源。group 释放不再被连接后的 15 秒保护拦住。
+电脑连接时，耳机仍可能保持手机的 LE ACL；这不代表手机仍拥有媒体流。模块监听 MEDIA 上下文撤回、blocked-media 建议、group 主动停用，以及耳机用 HCI `0x14` 释放 LE 资源。确认远端接管后，释放不受连接后的 15 秒保护限制。
+
+连接初始化时，对本来就没有 active group 的清理不会开启交接窗口。ROM 在 HFP 初始化期间直接调用 `LeAudioService.setActiveDevice(null)` 时，只对刚激活且仍连接的 AZ100 group 保留短期保护，防止“已连接但没有音频输出”。用户通过 Binder 选择其他输出时的 `removeActiveDevice()` 继续放行。
 
 确认交接后，模块停止自动升级、补连另一只耳塞和重新激活 group，也取消已排队的输出重设。只有 LE Audio 已在实际播放时，才断开 classic A2DP；退出独占状态只清掉本地标记，不主动重连手机 A2DP。这个状态持续到耳机重新提供 MEDIA 上下文，或用户在手机上明确连接 / 选择 AZ100；不会在 30 秒后自行抢回。
 
 验证：先让手机通过 LE Audio 连接，再在电脑上连接并播放，等待至少 35 秒，确认声音留在电脑；随后在手机上选择耳机，确认 LE Audio 可以恢复。交接后不应有模块发起的 `A2DP reconnect requested` 或 `leaExclusiveOn`。
 
-2026-10-14 的自动化验证覆盖 10 项交接状态测试。2.0.3 已在 OPPO Find X9 上验证：重启后不再因启动保护拆掉 A2DP，电脑可以接管。详情见 `2026-10-14_lea-host-handoff-fix.md`。
+2026-10-14 的自动化验证覆盖 **40 项**测试，其中交接状态 16 项、hook 回调 8 项。2.0.8 已在 **PLJ110 / Android 17 / PLJ110_17.0.0.101(CN01)** 验证：新蓝牙进程加载 49 个 hook，native patch `rc=0`，AZ100 成为 LE Audio active 输出；媒体测试的实际路由为 `TYPE_BLE_HEADSET (26)`，播放帧计数持续增长，用户实测确认一切正常。回滚与挂载排查见 `2026-10-14_modern-hook-and-audio-fix.md`；先前的电脑交接验证见 `2026-10-14_lea-host-handoff-fix.md`。
 
 ### 设置里的开关
 
@@ -138,7 +143,10 @@ OPPO 自家耳机的直连入口是 `OplusDualModeManagerImpl.onRemoteUuidsUpdat
 
 | 文件 | 进程 | 作用 |
 | --- | --- | --- |
-| `Az100Hook` | 入口 | Melody 走音量面板；蓝牙进程走 LE Audio |
+| `ModernXposedEntry` | 入口 | 加载现代模块、remote preferences 和目标进程 hook |
+| `HookRuntime` / `HookCall` | 适配层 | KavaRef 成员选择、libxposed 注册及 before/after 回调 |
+| `Az100Application` / `Prefs` | 模块应用 | 连接框架服务并发布设置 |
+| `Az100Hook` | 配置 | 两条作用域、AZ100 设备识别和协议常量 |
 | `MelodyProviderHook` | Melody | 应答音量面板 query 和点击 |
 | `MelodyDetailBatteryHook` | Melody | 详情页手动刷新电量 |
 | `DirectAirohaController` | Melody | 按次打开 SPP，发完即关 |
@@ -166,6 +174,11 @@ adb shell su -c 'dumpsys bluetooth_manager | grep -A3 "84:85"'
 - 两个 AZ100 地址都有 `directLeaConnect`
 - `[LE UUIDs]` 含 `0000184e`
 - LE Audio 连接后 `[ACL ... LE:Y]`
+- `AdapterService --print` 中 `currentlyActiveGroupId` 有效且 `mLeAudioActiveDevice` 为 AZ100；只看到连接数不够
+
+```bash
+adb shell su -c 'dumpsys activity service com.android.bluetooth/.btservice.AdapterService --print'
+````
 
 `persist.bluetooth.*` 属于 `bluetooth_prop`。`adb shell getprop` 可能返回空，读的时候用 `adb shell su -c "getprop ..."`。
 

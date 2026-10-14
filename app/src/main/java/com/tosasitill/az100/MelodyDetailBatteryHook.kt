@@ -12,7 +12,6 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import com.highcapable.kavaref.KavaRef.Companion.resolve
-import com.highcapable.yukihookapi.hook.param.PackageParam
 import java.lang.ref.WeakReference
 
 /**
@@ -29,7 +28,7 @@ object MelodyDetailBatteryHook {
     private const val PAGE_TAG = 0x415a1002
     private const val DANGER = 0xFFE5484D.toInt()
 
-    fun install(param: PackageParam) {
+    fun install(param: HookRuntime) {
         val loader = param.appClassLoader ?: return
         try {
             val activity = Reflect.findClass(DETAIL_ACTIVITY, loader)

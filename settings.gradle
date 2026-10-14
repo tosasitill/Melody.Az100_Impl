@@ -6,7 +6,6 @@ pluginManagement {
     }
     plugins {
         id 'com.android.application' version '9.1.0'
-        id 'com.google.devtools.ksp' version '2.3.9'
     }
 }
 
@@ -15,7 +14,6 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven { url = uri('https://api.xposed.info/') }
     }
 }
 

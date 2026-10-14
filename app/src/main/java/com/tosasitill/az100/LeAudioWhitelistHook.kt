@@ -5,7 +5,6 @@ import android.content.ContentProvider
 import android.database.Cursor
 import android.net.Uri
 import com.highcapable.kavaref.KavaRef.Companion.resolve
-import com.highcapable.yukihookapi.hook.param.PackageParam
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 
@@ -121,7 +120,7 @@ object LeAudioWhitelistHook {
     /** One trace line per key, so the cache hit path stays silent. */
     private val REPORTED = ConcurrentHashMap.newKeySet<String>()
 
-    fun install(param: PackageParam) {
+    fun install(param: HookRuntime) {
         if (!ENABLED) return
         val classLoader = param.appClassLoader ?: return
         synchronized(lock) {
@@ -138,7 +137,7 @@ object LeAudioWhitelistHook {
     /* the two resolvers                                                   */
     /* ------------------------------------------------------------------ */
 
-    private fun hookWhitelistUtils(param: PackageParam) {
+    private fun hookWhitelistUtils(param: HookRuntime) {
         val classLoader = loader ?: return
         try {
             val utils = Reflect.findClass(WHITELIST_UTILS, classLoader)
@@ -253,7 +252,7 @@ object LeAudioWhitelistHook {
      * Neither hook touches any other property or field, so nothing else about
      * Melody's feature detection changes.
      */
-    private fun hookFeatureOptions(param: PackageParam) {
+    private fun hookFeatureOptions(param: HookRuntime) {
         val classLoader = loader ?: return
         try {
             val options = Reflect.findClass(FEATURE_OPTIONS, classLoader)
@@ -317,7 +316,7 @@ object LeAudioWhitelistHook {
      * logged with its caller, which is the only way to find out whether the Settings
      * app is really the consumer.
      */
-    private fun hookAliveProvider(param: PackageParam) {
+    private fun hookAliveProvider(param: HookRuntime) {
         val classLoader = loader ?: return
         try {
             val provider = Reflect.findClass(ALIVE_PROVIDER, classLoader)

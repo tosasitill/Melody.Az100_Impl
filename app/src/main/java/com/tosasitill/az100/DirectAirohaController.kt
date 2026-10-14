@@ -1,6 +1,5 @@
 package com.tosasitill.az100
 
-import android.app.AndroidAppHelper
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
@@ -436,7 +435,7 @@ object DirectAirohaController {
                 }
                 return current
             }
-            val app = AndroidAppHelper.currentApplication()
+            val app = RuntimeEnvironment.application
             if (app != null) context = app
             return app
         }

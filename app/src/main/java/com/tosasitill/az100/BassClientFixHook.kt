@@ -3,7 +3,6 @@ package com.tosasitill.az100
 import android.bluetooth.BluetoothDevice
 import android.os.Looper
 import com.highcapable.kavaref.KavaRef.Companion.resolve
-import com.highcapable.yukihookapi.hook.param.PackageParam
 import java.lang.reflect.Method
 
 /**
@@ -130,7 +129,7 @@ object BassClientFixHook {
     private var oplusBassClientService: Class<*>? = null
     private var getInstance: Method? = null
 
-    fun install(param: PackageParam) {
+    fun install(param: HookRuntime) {
         if (!ENABLED) return
         val classLoader = param.appClassLoader ?: return
         synchronized(lock) {
@@ -169,7 +168,7 @@ object BassClientFixHook {
      * detail; the 2-argument form is what `AdapterService` constructs profile
      * services with.
      */
-    private fun hookConstructors(param: PackageParam) {
+    private fun hookConstructors(param: HookRuntime) {
         val service = bassClientService
         val adapter = adapterService
         val scan = scanController
@@ -235,7 +234,7 @@ object BassClientFixHook {
      * is the one that took the whole process down on device.  If injection did not
      * take, refuse the call instead of letting it throw.
      */
-    private fun hookConnect(param: PackageParam) {
+    private fun hookConnect(param: HookRuntime) {
         val service = bassClientService ?: return
         try {
             with(param) {

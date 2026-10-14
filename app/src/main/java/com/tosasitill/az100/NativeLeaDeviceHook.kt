@@ -3,7 +3,6 @@ package com.tosasitill.az100
 import android.os.Handler
 import android.os.Looper
 import com.highcapable.kavaref.KavaRef.Companion.resolve
-import com.highcapable.yukihookapi.hook.param.PackageParam
 import java.io.File
 import java.io.FileOutputStream
 import java.util.zip.ZipFile
@@ -86,7 +85,7 @@ object NativeLeaDeviceHook {
 
     private var loader: ClassLoader? = null
 
-    fun install(param: PackageParam) {
+    fun install(param: HookRuntime) {
         if (!ENABLED) return
         val classLoader = param.appClassLoader ?: return
         synchronized(lock) {
@@ -97,7 +96,7 @@ object NativeLeaDeviceHook {
         param.hookAdapterServiceCreate()
     }
 
-    private fun PackageParam.hookAdapterServiceCreate() {
+    private fun HookRuntime.hookAdapterServiceCreate() {
         try {
             Reflect.findClass(ADAPTER_SERVICE, appClassLoader).resolve()
                 .firstMethod {
@@ -185,14 +184,8 @@ object NativeLeaDeviceHook {
         return false
     }
 
-    /** The module apk is loaded by LSPosed; its CodeSource points at the apk. */
-    private fun moduleApkPath(): String? = try {
-        val cs = NativeLeaDeviceHook::class.java.protectionDomain?.codeSource
-        val p = cs?.location?.path
-        if (p != null && p.endsWith(".apk")) p else null
-    } catch (t: Throwable) {
-        null
-    }
+    /** Supplied by libxposed, independent of the module classloader implementation. */
+    private fun moduleApkPath(): String? = RuntimeEnvironment.moduleApkPath
 
     private fun extract(apk: String): File? {
         val dir = cacheDir() ?: return null
@@ -213,21 +206,8 @@ object NativeLeaDeviceHook {
      * fallback for builds where the cache dir is not reachable yet.
      */
     private fun cacheDir(): File? {
-        val classLoader = loader
-        if (classLoader != null) {
-            try {
-                val app = Reflect.callStaticMethod(
-                    Reflect.findClass("android.app.AndroidAppHelper", classLoader),
-                    "currentApplication"
-                )
-                if (app != null) {
-                    val dir = Reflect.callMethod(app, "getCodeCacheDir") as? File
-                    if (dir != null && dir.isDirectory) return dir
-                }
-            } catch (t: Throwable) {
-                // Fall through to the shared path below.
-            }
-        }
+        val dir = RuntimeEnvironment.application?.codeCacheDir
+        if (dir != null && dir.isDirectory) return dir
         val fallback = File("/data/local/tmp")
         return if (fallback.isDirectory) fallback else null
     }

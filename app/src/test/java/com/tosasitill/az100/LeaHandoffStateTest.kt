@@ -115,4 +115,55 @@ class LeaHandoffStateTest {
         assertFalse(state.isYielding(31_001L))
         assertFalse(state.isYielding(999L))
     }
+
+    @Test
+    fun autoReconnectSuppressionDoesNotOutliveAnAmbiguousRelease() {
+        state.yieldTemporarily(1_000L)
+        assertTrue(state.shouldSuppressAutoConnect(9_000L))
+        assertFalse(state.shouldSuppressAutoConnect(9_001L))
+        assertTrue(state.isYielding(9_001L))
+    }
+
+    @Test
+    fun releaseBeforeFirstActivationCannotSuppressTheNewAudioOutput() {
+        assertFalse(state.onApiRelease(-1, true, false, 1_000L))
+        assertFalse(state.onGroupDeactivated(-1, true, 1_004L))
+        assertFalse(state.isYielding(2_535L))
+        assertFalse(state.shouldSuppressAutoConnect(2_535L))
+        assertTrue(state.shouldHoldRelease(2_535L, 2_650L, 15_000L))
+    }
+
+    @Test
+    fun releaseOfARealActiveGroupStillYieldsToAnotherHost() {
+        assertTrue(state.onApiRelease(1, true, false, 20_000L))
+        assertTrue(state.onGroupDeactivated(1, true, 20_005L))
+        assertTrue(state.isYielding(20_100L))
+        assertFalse(state.shouldReconnectClassic(20_100L, false))
+    }
+
+    @Test
+    fun recentActivationOrAnUnrelatedGroupDoesNotOpenAHandoff() {
+        assertFalse(state.onApiRelease(1, true, true, 1_199L))
+        assertFalse(state.onApiRelease(-1, true, false, 1_200L))
+        assertFalse(state.onApiRelease(2, false, false, 1_201L))
+        assertFalse(state.onGroupDeactivated(2, false, 1_202L))
+        assertFalse(state.isYielding(1_202L))
+    }
+
+    @Test
+    fun noOpGroupReleaseCannotCancelConfirmedRemoteOwnership() {
+        assertTrue(state.onAclDisconnected(1, 2, 0x14, 20_000L))
+        assertFalse(state.onApiRelease(-1, true, false, 20_010L))
+        assertFalse(state.onGroupDeactivated(-1, true, 20_020L))
+        assertTrue(state.isYielding(90_000L))
+        assertTrue(state.shouldSuppressAutoConnect(90_000L))
+    }
+
+    @Test
+    fun confirmedRemoteOwnerKeepsAutomaticReconnectSuppressed() {
+        state.yieldRemotely(1, 1_000L)
+        assertTrue(state.shouldSuppressAutoConnect(90_000L))
+        state.resumeLocally()
+        assertFalse(state.shouldSuppressAutoConnect(90_001L))
+    }
 }

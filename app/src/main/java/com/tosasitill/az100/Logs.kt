@@ -1,7 +1,7 @@
 package com.tosasitill.az100
 
 import android.util.Log
-import com.highcapable.yukihookapi.hook.log.YLog
+import io.github.libxposed.api.XposedInterface
 import java.io.File
 import java.io.FileOutputStream
 
@@ -51,27 +51,48 @@ object Logs {
      */
     fun traceToFile(directory: File?) {
         synchronized(lock) {
-            traceFile = directory?.let { File(it, "az100.log") }
+            val nextFile = directory?.let { File(it, "az100.log") }
+            if (traceFile == nextFile) return
+            traceFile = nextFile
             closeQuietly()
             traceOpened = false
         }
     }
 
+    @Volatile
+    private var framework: XposedInterface? = null
+
+    fun attach(value: XposedInterface) {
+        framework = value
+    }
+
     fun d(message: String) {
-        if (DEBUG) YLog.debug(msg = message, tag = TAG)
+        if (DEBUG) write(Log.DEBUG, message)
     }
 
     fun d(message: String, t: Throwable) {
-        if (DEBUG) YLog.debug(msg = message, e = t, tag = TAG)
+        if (DEBUG) write(Log.DEBUG, message, t)
     }
 
-    /** One-shot lifecycle events: process install, fatal setup errors. */
+    /** Always available, independently of verbose diagnostics. */
     fun i(message: String) {
-        YLog.info(msg = message, tag = TAG)
+        write(Log.INFO, message)
+        trace(message)
     }
 
     fun e(message: String, t: Throwable) {
-        YLog.error(msg = message, e = t, tag = TAG)
+        write(Log.ERROR, message, t)
+        trace("$message\n${Log.getStackTraceString(t)}")
+    }
+
+    private fun write(priority: Int, message: String, error: Throwable? = null) {
+        if (error == null) Log.println(priority, TAG, message)
+        else Log.println(priority, TAG, "$message\n${Log.getStackTraceString(error)}")
+        try {
+            framework?.log(priority, TAG, message, error)
+        } catch (ignored: Throwable) {
+            // File tracing and logcat still work if the framework logger fails.
+        }
     }
 
     /** Airoha link timeline and hook events; never called on a hot path. */

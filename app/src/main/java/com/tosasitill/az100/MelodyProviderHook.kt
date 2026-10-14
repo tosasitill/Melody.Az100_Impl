@@ -11,7 +11,6 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
 import com.highcapable.kavaref.KavaRef.Companion.resolve
-import com.highcapable.yukihookapi.hook.param.PackageParam
 
 /**
  * The 降噪 tile of the ColorOS volume panel lives in SystemUI but every piece of
@@ -133,13 +132,12 @@ object MelodyProviderHook {
     @Volatile
     private var wearDeliveredToQuery = false
 
-    fun install(param: PackageParam, ctx: Context?) {
+    fun install(param: HookRuntime, ctx: Context?) {
         synchronized(this) {
             if (installed) return
             installed = true
         }
         val loader = param.appClassLoader ?: return
-        Prefs.attach(param.prefs)
         context = ctx
         if (ctx != null) Logs.traceToFile(ctx.getExternalFilesDir(null))
         // The detail activity runs in Melody's :fg process and is independent of
@@ -302,7 +300,7 @@ object MelodyProviderHook {
      * selection lists every known headset, so the AZ100 row is appended.  A query
      * that already names this mac replaces that row.
      */
-    private fun hookBatteryProvider(param: PackageParam) {
+    private fun hookBatteryProvider(param: HookRuntime) {
         try {
             val provider = Reflect.findClass(
                 "com.oplus.melody.provider.BatteryProvider", param.appClassLoader
@@ -468,7 +466,7 @@ object MelodyProviderHook {
      * connect even when the process was dead, so hooking it is the only event that
      * survives the processes being killed between two sessions.
      */
-    private fun hookMelodyBluetoothReceiver(param: PackageParam) {
+    private fun hookMelodyBluetoothReceiver(param: HookRuntime) {
         try {
             val receiver = Reflect.findClass(
                 "com.oplus.melody.app.bluetooth.BluetoothBroadcastReceiver", param.appClassLoader
