@@ -9,24 +9,36 @@ internal class LeaHandoffState(private val yieldWindowMs: Long) {
     private var yieldAt: Long? = null
     private var remoteGroupId: Int? = null
     private var remoteAclReleased = false
+    private var manuallyDisconnected = false
 
     @Synchronized
     fun isYielding(now: Long): Boolean {
-        if (remoteGroupId != null) return true
+        if (manuallyDisconnected || remoteGroupId != null) return true
         val openedAt = yieldAt ?: return false
         return now >= openedAt && now - openedAt <= yieldWindowMs
     }
 
-    /**
-     * An API release without a confirmed remote owner must not keep blocking a
-     * later explicit phone connection. Confirmed remote ownership still waits
-     * for native MEDIA or that selection.
-     */
+    /** Explicit selection can end the window; background connects must wait. */
     @Synchronized
-    fun shouldSuppressAutoConnect(now: Long): Boolean {
-        if (remoteGroupId != null) return true
-        val openedAt = yieldAt ?: return false
-        return now >= openedAt && now - openedAt <= AUTO_CONNECT_SUPPRESS_MS
+    fun shouldSuppressAutoConnect(now: Long): Boolean = isYielding(now)
+
+    /** A disconnect applies to the whole headset until the user selects it again. */
+    @Synchronized
+    fun disconnectLocally() {
+        manuallyDisconnected = true
+    }
+
+    @Synchronized
+    fun isManuallyDisconnected(): Boolean = manuallyDisconnected
+
+    /** Service connect() is also used by policy retries and sibling auto-connect. */
+    @Synchronized
+    fun onConnectRequested(explicitLocalSelection: Boolean, now: Long): Boolean {
+        if (explicitLocalSelection) {
+            resumeLocally()
+            return true
+        }
+        return !shouldSuppressAutoConnect(now)
     }
 
     /** Releasing an already inactive group is normal connection bookkeeping. */
@@ -71,6 +83,7 @@ internal class LeaHandoffState(private val yieldWindowMs: Long) {
     @Synchronized
     fun onAvailableContexts(groupId: Int, contexts: Int, now: Long): ContextChange {
         val previous = contextsByGroup.put(groupId, contexts)
+        if (manuallyDisconnected) return ContextChange.NONE
         val mediaAvailable = contexts and MEDIA_CONTEXT != 0
         // A stale capability report or an automatic reconnect does not undo a
         // peer's resource release. That handoff ends with explicit local selection.
@@ -90,6 +103,7 @@ internal class LeaHandoffState(private val yieldWindowMs: Long) {
 
     @Synchronized
     fun resumeLocally() {
+        manuallyDisconnected = false
         remoteGroupId = null
         remoteAclReleased = false
         yieldAt = null
@@ -111,6 +125,5 @@ internal class LeaHandoffState(private val yieldWindowMs: Long) {
         const val MEDIA_CONTEXT = 0x0004
         const val LE_TRANSPORT = 2
         const val REMOTE_LOW_RESOURCES = 0x14
-        const val AUTO_CONNECT_SUPPRESS_MS = 8_000L
     }
 }

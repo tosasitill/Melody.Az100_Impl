@@ -19,7 +19,7 @@ Use JDK 21 and an installed Gradle/Android SDK. JDK 25/26 fails in `JdkImageTran
 - `gradle :app:assembleRelease` builds the release APK.
 - `gradle :app:testDebugUnitTest` runs the JVM regression tests.
 
-For Melody-only changes, install the module, enable it in LSPosed, force-stop `com.oplus.melody`, and inspect `adb logcat -s AZ100:V`. For Bluetooth changes, also scope `com.android.bluetooth` and restart that process; its reliable log is `/data/misc/bluetooth/az100.log`.
+For Melody-only changes, install the module, enable it in LSPosed, force-stop `com.oplus.melody`, and inspect `adb logcat -s AZ100:V`. For Bluetooth changes, also scope `com.android.bluetooth` and restart that process; its reliable log is `/data/misc/bluetooth/az100.log`. Confirm the loaded module version in that log: installing a new APK or toggling Bluetooth does not guarantee a new Bluetooth process or refreshed hooks.
 
 Do not broaden LSPosed scope to SystemUI, Device Space, or Technics Audio Connect.
 

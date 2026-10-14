@@ -2393,9 +2393,8 @@ object LeAudioTransportHook {
                             if (args.isEmpty()) return@after
                             val device = args[0] as? BluetoothDevice ?: return@after
                             if (hasThrowable == true || result != true) return@after
-                            if (IN_TWIN.get() != true) {
-                                addressOf(device)?.let { TWIN_BLOCKED.remove(it) }
-                            }
+                            // Only an explicit local selection clears TWIN_BLOCKED.
+                            // Policy retries reach this same hook too.
                             connectTwin(instanceOrNull, device)
                         }
                     }
@@ -2424,7 +2423,16 @@ object LeAudioTransportHook {
     private val TWIN_ATTEMPTS = ConcurrentHashMap<String, Long>()
     private const val TWIN_COOLDOWN_MS = 60000L
 
+    /** A user selection of either identity permits the whole pair to connect. */
+    fun onLocalLeaSelection() {
+        TWIN_BLOCKED.remove(Az100Hook.AZ100_MAC)
+        TWIN_BLOCKED.remove(Az100Hook.AZ100_LE_MAC)
+        TWIN_ATTEMPTS.remove(Az100Hook.AZ100_MAC)
+        TWIN_ATTEMPTS.remove(Az100Hook.AZ100_LE_MAC)
+    }
+
     private fun connectTwin(leAudioService: Any?, device: BluetoothDevice) {
+        if (!twinAutoConnect()) return
         if (OplusDualModeCoexistHook.shouldYieldLeAudioAutoConnect()) {
             Logs.trace("lea: twin connect yielded during host hand-over")
             return

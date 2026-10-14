@@ -1,6 +1,6 @@
 # Technics EAH-AZ100 适配
 
-LSPosed 模块，当前版本 **2.0.8**（versionCode 42）。它做两件分开的事：
+LSPosed 模块，当前版本 **2.0.9**（versionCode 43）。它做两件分开的事：
 
 - 在 `com.oplus.melody` 里应答音量面板，并用自带的 Airoha SPP/RACE 读写降噪和电量。
 - 在 `com.android.bluetooth` 里让 AZ100 走 LE Audio（LC3），并让系统设置出现 LE Audio 开关。
@@ -109,6 +109,12 @@ OPPO 自家耳机的直连入口是 `OplusDualModeManagerImpl.onRemoteUuidsUpdat
 
 同一地址在上一次直连任务还没执行时不会重复排队。
 
+### 手动断开与重新连接
+
+手机通过系统入口手动断开 AZ100 后，模块记录整副耳机的断开意图，阻止自动 LE Audio 升级、双耳补连、厂商 profile 补连和 classic fallback。MEDIA 状态报告或后台调用 `LeAudioService.connect()` 都不能解除这个状态。重新在手机上明确连接 / 选择 AZ100 时，两只耳塞一起恢复连接许可。该状态保存在当前蓝牙进程内，重启蓝牙进程后重新遵循正常连接策略。
+
+`LeAudioService.connect()` 同时被用户入口、`PhonePolicy` 和厂商连接策略调用；仅经过权限检查的 Binder 用户入口可以重新接管耳机。2.0.9 修复了将后台连接误判成用户选择的逻辑，并在确认交接和临时让出期间都拦截 group 激活，避免原方法调用 native `groupSetAudioResume` 把音频拉回手机。
+
 ### 手机 LE Audio 与电脑交接
 
 电脑连接时，耳机仍可能保持手机的 LE ACL；这不代表手机仍拥有媒体流。模块监听 MEDIA 上下文撤回、blocked-media 建议、group 主动停用，以及耳机用 HCI `0x14` 释放 LE 资源。确认远端接管后，释放不受连接后的 15 秒保护限制。
@@ -119,7 +125,11 @@ OPPO 自家耳机的直连入口是 `OplusDualModeManagerImpl.onRemoteUuidsUpdat
 
 验证：先让手机通过 LE Audio 连接，再在电脑上连接并播放，等待至少 35 秒，确认声音留在电脑；随后在手机上选择耳机，确认 LE Audio 可以恢复。交接后不应有模块发起的 `A2DP reconnect requested` 或 `leaExclusiveOn`。
 
-2026-10-14 的自动化验证覆盖 **40 项**测试，其中交接状态 16 项、hook 回调 8 项。2.0.8 已在 **PLJ110 / Android 17 / PLJ110_17.0.0.101(CN01)** 验证：新蓝牙进程加载 49 个 hook，native patch `rc=0`，AZ100 成为 LE Audio active 输出；媒体测试的实际路由为 `TYPE_BLE_HEADSET (26)`，播放帧计数持续增长，用户实测确认一切正常。回滚与挂载排查见 `2026-10-14_modern-hook-and-audio-fix.md`；先前的电脑交接验证见 `2026-10-14_lea-host-handoff-fix.md`。
+当前自动化验证覆盖 **48 项**测试，其中交接 / 断开状态 23 项、hook 回调 9 项。2.0.8 曾在 **PLJ110 / Android 17 / PLJ110_17.0.0.101(CN01)** 验证入口、native patch 和 LE Audio active 输出；随后用户报告临时音频探针导致黑屏及无法重启，相关实机测试方式已在 `AGENTS.md` 禁止。2.0.9 已通过离线测试及 debug/release 构建并覆盖安装。**22:14:58 的 Bluetooth 入口日志已确认实际加载 2.0.9 / 43、libxposed API 102；用户随后确认当前使用正常。** 安装和开关蓝牙均不保证目标进程退出，后续更新仍应以 `/data/misc/bluetooth/az100.log` 的入口版本确认新 hook 已加载。
+
+此前仍运行 2.0.8 时，用户确认手动断开有效，但电脑没有音频。对应快照中手机 native group 为 IDLE、CIG=NONE、CIS=0；Mac 已完成 AAC 配置，但 AVDTP 的最后一条媒体状态为 OPENING，CoreAudio 没有发布耳机输出。那次连接中菜单栏工具的自动 RFCOMM 读取与媒体建立并行，尚未证明其因果关系；历史证据见 [Mac 媒体通道排查](2026-10-14_mac-audio-publish-stall.md)。
+
+手动断开和电脑交接的修复与验证边界见 `2026-10-14_manual-disconnect-and-handoff-fix.md`。回滚与挂载排查见 `2026-10-14_modern-hook-and-audio-fix.md`；先前的电脑交接记录见 `2026-10-14_lea-host-handoff-fix.md`。
 
 ### 设置里的开关
 

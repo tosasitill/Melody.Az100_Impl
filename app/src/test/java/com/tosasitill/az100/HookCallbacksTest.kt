@@ -101,6 +101,36 @@ class HookCallbacksTest {
     }
 
     @Test
+    fun invocationStateKeepsNestedSelectionMarkersIndependent() {
+        val marker = ThreadLocal<Boolean>()
+        val hook = HookCallbacks().apply {
+            before {
+                state = marker.get()
+                marker.set(true)
+            }
+            after {
+                if (state == true) marker.set(true)
+                else marker.remove()
+            }
+        }
+
+        hook.invoke(null, emptyArray(), {
+            assertEquals(true, marker.get())
+            hook.invoke(null, emptyArray(), { assertEquals(true, marker.get()); true }, { throw it })
+            assertEquals(true, marker.get())
+            true
+        }, { throw it })
+        assertEquals(null, marker.get())
+
+        try {
+            hook.invoke(null, emptyArray(), { throw IllegalStateException("permission rejected") }, { throw it })
+            fail("callee exception swallowed")
+        } catch (expected: IllegalStateException) {
+            assertEquals(null, marker.get())
+        }
+    }
+
+    @Test
     fun failedAfterHookKeepsTheOriginalException() {
         val exception = IllegalStateException("callee failure")
         val hook = HookCallbacks().apply {

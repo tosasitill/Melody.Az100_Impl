@@ -593,6 +593,7 @@ object OplusDualModeCoexistHook {
     /** Handoff ownership persists until native MEDIA returns or a local selection. */
         private val LEA_HANDOFF = LeaHandoffState(LEA_YIELD_WINDOW_MS)
         private val IN_LOCAL_LEA_SELECTION = ThreadLocal<Boolean>()
+        private val IN_LOCAL_LEA_DISCONNECT = ThreadLocal<Boolean>()
 
 
     /**
@@ -701,6 +702,8 @@ object OplusDualModeCoexistHook {
             if (LE_AUDIO_TAKES_OVER && !leaHooked) {
                 leaHooked = true;
                 hookLeaHandoffSignals(param);
+                hookManualDisconnect(param);
+                hookAutomaticProfileConnect(param);
                 hookLeaAclRelease(param);
                 hookLeAudioActiveBypass(param);
                 hookGroupAvailableForStream(param);
@@ -741,6 +744,7 @@ object OplusDualModeCoexistHook {
             hookIsDualConnectionNeeded(param, impl);
             hookDirectLeaConnect(param, impl);
             hookLeaInitPriorities(param, leaExt);
+            hookVendorLeaConnectGuard(param, leaExt);
             hookEarbudsMultiConn(param, impl);
             hookVendorTeardownPaths(param, cl);
             if (LE_AUDIO_TAKES_OVER) {
@@ -1654,12 +1658,13 @@ object OplusDualModeCoexistHook {
                 service.resolve().optional(silent = true).method { name = "connect" }.hookAll {
                     before {
                         if (args.isEmpty() || !isAz100Arg(args[0])) return@before;
-                        // Binder entries and the settings page both reach this
-                        // method. Either one is an explicit phone selection, so
-                        // clear the handoff and let the connection proceed.
-                        // Automatic reconnects never call connect() again; they
-                        // stay on the background accept list.
-                        resumeLeaLocally();
+                        val localSelection = IN_LOCAL_LEA_SELECTION.get() == true;
+                        if (localSelection) resumeLeaLocally();
+                        if (!LEA_HANDOFF.onConnectRequested(localSelection,
+                                SystemClock.elapsedRealtime())) {
+                            result = false;
+                            noteOnce("leaConnectSuppressed");
+                        }
                     }
                 }
             }
@@ -1669,6 +1674,125 @@ object OplusDualModeCoexistHook {
         }
         hookLocalLeaSelection(param, "com.android.bluetooth.le_audio.LeAudioServiceBinder", "connect");
         hookLocalLeaSelection(param, "com.android.bluetooth.btservice.AdapterServiceBinder", "connectAllEnabledProfiles");
+    }
+
+
+    /** Stop vendor fan-out before VCP/CSIP/BAS can reopen either earbud's ACL. */
+    private fun hookVendorLeaConnectGuard(param: HookRuntime, leaExt: Class<*>) {
+        try {
+            with(param) {
+                leaExt.resolve().optional(silent = true).firstMethod {
+                    name = "connectLeAudio"
+                    parameters(BluetoothDevice::class.java)
+                }.hook {
+                    before {
+                        if (!isAz100Arg(args[0]) || !shouldYieldLeAudioAutoConnect()) return@before;
+                        result = null;
+                        noteOnce("vendorLeaConnectSuppressed");
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            Logs.e("dual-coexist: vendor LEA connect guard failed", t);
+        }
+    }
+
+
+    /** Remember a permission-checked user disconnect before profile callbacks run. */
+    private fun hookManualDisconnect(param: HookRuntime) {
+        val cl = loader ?: return;
+        try {
+            val adapter = Reflect.findClass("com.android.bluetooth.btservice.AdapterService", cl);
+            with(param) {
+                adapter.resolve().optional(silent = true).firstMethod {
+                    name = "disconnectAllEnabledProfiles"
+                    parameters(BluetoothDevice::class.java, Integer.TYPE)
+                }.hook {
+                    before {
+                        // AdapterServiceBinder uses 1111 for the user's request;
+                        // vendor cleanup calls the same service with reason 0.
+                        if (isAz100Arg(args[0]) && args[1] == 1111) disconnectLeaLocally();
+                    }
+                }
+            }
+            val binder = Reflect.findClass("com.android.bluetooth.le_audio.LeAudioServiceBinder", cl);
+            val service = Reflect.findClass(LE_AUDIO_SERVICE, cl);
+            with(param) {
+                binder.resolve().optional(silent = true).method { name = "disconnect" }.hookAll {
+                    before {
+                        state = IN_LOCAL_LEA_DISCONNECT.get();
+                        if (args.isNotEmpty() && isAz100Arg(args[0])) IN_LOCAL_LEA_DISCONNECT.set(true);
+                    }
+                    after {
+                        if (state == true) IN_LOCAL_LEA_DISCONNECT.set(true);
+                        else IN_LOCAL_LEA_DISCONNECT.remove();
+                    }
+                }
+                service.resolve().optional(silent = true).firstMethod {
+                    name = "disconnect"
+                    parameters(BluetoothDevice::class.java)
+                }.hook {
+                    before {
+                        if (IN_LOCAL_LEA_DISCONNECT.get() == true && isAz100Arg(args[0])) {
+                            disconnectLeaLocally();
+                        }
+                    }
+                }
+            }
+            val headset = Reflect.findClass(HEADSET_SERVICE, cl);
+            with(param) {
+                // HeadsetService does not use ConnectableProfile.okToConnect()
+                // for either of these paths on the captured ROM.
+                headset.resolve().optional(silent = true).firstMethod {
+                    name = "connect"
+                    parameters(BluetoothDevice::class.java)
+                }.hook {
+                    before {
+                        if (isAz100Arg(args[0]) && shouldYieldLeAudioAutoConnect()) {
+                            result = false;
+                            noteOnce("hfpConnectSuppressed");
+                        }
+                    }
+                }
+                headset.resolve().optional(silent = true).firstMethod {
+                    name = "okToAcceptConnection"
+                    parameters(BluetoothDevice::class.java, java.lang.Boolean.TYPE)
+                }.hook {
+                    before {
+                        if (isAz100Arg(args[0]) && LEA_HANDOFF.isManuallyDisconnected()) {
+                            result = false;
+                            noteOnce("manualHfpIncomingConnectRefused");
+                        }
+                    }
+                }
+            }
+            Logs.trace("dual-coexist: manual disconnect guard armed");
+        } catch (t: Throwable) {
+            Logs.e("dual-coexist: manual disconnect guard failed", t);
+        }
+    }
+
+
+    /** A delayed policy retry must respect the choice made after it was queued. */
+    private fun hookAutomaticProfileConnect(param: HookRuntime) {
+        val cl = loader ?: return;
+        try {
+            val policy = Reflect.findClass("com.android.bluetooth.btservice.PhonePolicy", cl);
+            with(param) {
+                policy.resolve().optional(silent = true).firstMethod {
+                    name = "processConnectOtherProfiles"
+                    parameters(BluetoothDevice::class.java)
+                }.hook {
+                    before {
+                        if (!isAz100Arg(args[0]) || !shouldYieldLeAudioAutoConnect()) return@before;
+                        result = null;
+                        noteOnce("profileRetrySuppressed");
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            Logs.e("dual-coexist: profile retry guard failed", t);
+        }
     }
 
 
@@ -1721,21 +1845,29 @@ object OplusDualModeCoexistHook {
                     name = "setActiveDevice"
                 }.hookAll {
                     before {
+                        state = IN_LOCAL_LEA_SELECTION.get();
                         if (args.isNotEmpty() && isAz100Arg(args[0])) {
                             IN_LOCAL_LEA_SELECTION.set(true);
                         }
                     }
-                    after { IN_LOCAL_LEA_SELECTION.remove(); }
+                    after {
+                        if (state == true) IN_LOCAL_LEA_SELECTION.set(true);
+                        else IN_LOCAL_LEA_SELECTION.remove();
+                    }
                 }
                 binder.resolve().optional(silent = true).method {
                     name = connectMethod
                 }.hookAll {
                     before {
+                        state = IN_LOCAL_LEA_SELECTION.get();
                         if (args.isNotEmpty() && isAz100Arg(args[0])) {
                             IN_LOCAL_LEA_SELECTION.set(true);
                         }
                     }
-                    after { IN_LOCAL_LEA_SELECTION.remove(); }
+                    after {
+                        if (state == true) IN_LOCAL_LEA_SELECTION.set(true);
+                        else IN_LOCAL_LEA_SELECTION.remove();
+                    }
                 }
             }
             // Reset at the permission-checked AdapterService entry; its body may
@@ -1747,8 +1879,13 @@ object OplusDualModeCoexistHook {
                         name = connectMethod
                     }.hookAll {
                         before {
-                            if (IN_LOCAL_LEA_SELECTION.get() != true) return@before;
-                            if (args.isNotEmpty() && isAz100Arg(args[0])) resumeLeaLocally();
+                            if (args.isEmpty() || !isAz100Arg(args[0])) return@before;
+                            if (IN_LOCAL_LEA_SELECTION.get() == true) {
+                                resumeLeaLocally();
+                            } else if (shouldYieldLeAudioAutoConnect()) {
+                                result = android.bluetooth.BluetoothStatusCodes.ERROR_UNKNOWN;
+                                noteOnce("adapterConnectSuppressed");
+                            }
                         }
                     }
                     adapter.resolve().optional(silent = true).method {
@@ -1788,11 +1925,9 @@ object OplusDualModeCoexistHook {
                                 resumeLeaLocally();
                             }
                             if (inLeaYieldWindow()) {
-                                // The original method also calls groupSetAudioResume.
-                                // A confirmed remote handoff must stop that path too.
-                                if (isAz100Arg(raw) && LEA_HANDOFF.isRemoteYielding()) {
-                                    result = false;
-                                }
+                                // Both confirmed ownership and a deliberate release
+                                // must block the original native groupSetAudioResume.
+                                if (isAz100Arg(raw)) result = false;
                                 noteOnce("leaActiveForcedYielded");
                                 return@before;
                             }
@@ -1879,7 +2014,7 @@ object OplusDualModeCoexistHook {
                 }.hook {
                         before {
                             if (args[0] is BluetoothDevice) {
-                                if (isAz100Arg(args[0]) && LEA_HANDOFF.isRemoteYielding()) {
+                                if (isAz100Arg(args[0]) && inLeaYieldWindow()) {
                                     result = false;
                                     noteOnce("groupActivationYielded");
                                     return@before;
@@ -2130,8 +2265,26 @@ object OplusDualModeCoexistHook {
                     parameters(BluetoothDevice::class.java)
                 }.hook {
                     before {
-                            if (!a2dpService.isInstance(instanceOrNull)) return@before;
                             if (!isAz100Arg(args[0])) return@before;
+                            if (LEA_HANDOFF.isManuallyDisconnected()) {
+                                result = false;
+                                noteOnce("manualProfileConnectRefused");
+                                return@before;
+                            }
+                            if (instanceOrNull?.javaClass?.name == LE_AUDIO_SERVICE
+                                    && shouldYieldLeAudioAutoConnect()) {
+                                result = false;
+                                noteOnce("leaIncomingConnectSuppressed");
+                                return@before;
+                            }
+                            if (!a2dpService.isInstance(instanceOrNull)) return@before;
+                            // This one-argument funnel is outgoing. An existing
+                            // incoming classic link uses A2dpService's overload.
+                            if (shouldYieldLeAudioAutoConnect()) {
+                                result = false;
+                                noteOnce("a2dpOutgoingConnectSuppressed");
+                                return@before;
+                            }
                             val device = (args[0] as BluetoothDevice);
                             if (!classicMustStayDown(device)) return@before;
                             result = false;
@@ -2164,6 +2317,9 @@ object OplusDualModeCoexistHook {
      * holds the path and a classic profile should hold it too.
      */
     private fun classicMustStayDown(device: BluetoothDevice): Boolean {
+        // A manual disconnect blocks phone profile connections and activations,
+        // including incoming A2DP and any fallback request already on the stack.
+        if (LEA_HANDOFF.isManuallyDisconnected()) return true;
         // Standing aside: whichever host owns the earbud now needs the classic
         // path free, so nothing is held down for the duration of the window.
         // See LEA_YIELD_WINDOW_MS.
@@ -3027,7 +3183,16 @@ object OplusDualModeCoexistHook {
     private fun resumeLeaLocally() {
         val wasYielding = inLeaYieldWindow();
         LEA_HANDOFF.resumeLocally();
-        if (wasYielding) Logs.trace("dual-coexist: handoff ended by local selection");
+        LeAudioTransportHook.onLocalLeaSelection();
+        LEA_CONNECT_LAST_ATTEMPT.clear();
+        if (wasYielding) Logs.trace("dual-coexist: handoff/disconnect ended by local selection");
+    }
+
+
+    private fun disconnectLeaLocally() {
+        LEA_HANDOFF.disconnectLocally();
+        abandonExclusiveHold();
+        Logs.trace("dual-coexist: manual disconnect, automatic connections suppressed for both earbuds");
     }
 
 

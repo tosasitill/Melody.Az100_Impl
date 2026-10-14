@@ -117,11 +117,12 @@ class LeaHandoffStateTest {
     }
 
     @Test
-    fun autoReconnectSuppressionDoesNotOutliveAnAmbiguousRelease() {
+    fun autoReconnectSuppressionCoversTheEntireAmbiguousRelease() {
         state.yieldTemporarily(1_000L)
-        assertTrue(state.shouldSuppressAutoConnect(9_000L))
-        assertFalse(state.shouldSuppressAutoConnect(9_001L))
-        assertTrue(state.isYielding(9_001L))
+        assertTrue(state.shouldSuppressAutoConnect(9_001L))
+        assertTrue(state.shouldSuppressAutoConnect(31_000L))
+        assertFalse(state.shouldSuppressAutoConnect(31_001L))
+        assertFalse(state.isYielding(31_001L))
     }
 
     @Test
@@ -157,6 +158,98 @@ class LeaHandoffStateTest {
         assertFalse(state.onGroupDeactivated(-1, true, 20_020L))
         assertTrue(state.isYielding(90_000L))
         assertTrue(state.shouldSuppressAutoConnect(90_000L))
+    }
+
+    @Test
+    fun manualDisconnectSurvivesPolicyRetriesContextReportsAndTimeouts() {
+        state.onAvailableContexts(1, 0x0fff, 1_000L)
+        state.disconnectLocally()
+
+        assertFalse(state.onConnectRequested(false, 2_300L))
+        assertEquals(LeaHandoffState.ContextChange.NONE,
+                state.onAvailableContexts(1, 0x0fff, 2_500L))
+        assertFalse(state.onConnectRequested(false, 2_600L))
+        assertFalse(state.onConnectRequested(false, 90_000L))
+        assertTrue(state.isManuallyDisconnected())
+        assertTrue(state.isYielding(90_000L))
+        assertTrue(state.shouldSuppressAutoConnect(90_000L))
+        assertFalse(state.shouldReconnectClassic(90_000L, false))
+        assertFalse(state.shouldHoldRelease(89_999L, 90_000L, 15_000L))
+    }
+
+    @Test
+    fun onlyAnExplicitPhoneConnectReleasesTheManualDisconnect() {
+        state.disconnectLocally()
+        assertFalse(state.onConnectRequested(false, 1_000L))
+        assertTrue(state.onConnectRequested(true, 2_000L))
+        assertFalse(state.isManuallyDisconnected())
+        assertFalse(state.isYielding(2_000L))
+        assertTrue(state.onConnectRequested(false, 2_001L))
+        assertTrue(state.shouldReconnectClassic(2_001L, false))
+    }
+
+    @Test
+    fun automaticServiceAndSiblingConnectsCannotUndoComputerTakeover() {
+        state.onAvailableContexts(1, 0x0fff, 1_000L)
+        assertTrue(state.onAclDisconnected(1, 2, 0x14, 1_100L))
+
+        assertFalse(state.onConnectRequested(false, 1_200L))
+        assertFalse(state.onConnectRequested(false, 1_201L))
+        assertEquals(LeaHandoffState.ContextChange.NONE,
+                state.onAvailableContexts(1, 0x0fff, 1_202L))
+        assertFalse(state.onConnectRequested(false, 90_000L))
+        assertTrue(state.isRemoteYielding())
+        assertTrue(state.isYielding(90_000L))
+        assertFalse(state.shouldHoldRelease(1_000L, 1_300L, 15_000L))
+        assertFalse(state.shouldReconnectClassic(90_000L, false))
+
+        assertTrue(state.onConnectRequested(true, 90_001L))
+        assertFalse(state.isRemoteYielding())
+        assertFalse(state.isYielding(90_001L))
+    }
+
+    @Test
+    fun aPolicyConnectCannotEraseTheContextsNeededToDetectMediaWithdrawal() {
+        state.onAvailableContexts(1, 0x0fff, 1_000L)
+        assertTrue(state.onConnectRequested(false, 1_100L))
+        assertEquals(LeaHandoffState.ContextChange.YIELDED,
+                state.onAvailableContexts(1, 0x0ffb, 1_200L))
+        assertFalse(state.onConnectRequested(false, 1_300L))
+        assertTrue(state.isRemoteYielding())
+    }
+
+    @Test
+    fun aReleaseBlocksAutomaticActivationWithoutRequiringAnAclResourceSignal() {
+        assertTrue(state.onApiRelease(1, true, false, 20_000L))
+        assertFalse(state.onConnectRequested(false, 21_000L))
+        assertTrue(state.isYielding(21_000L))
+        assertFalse(state.shouldHoldRelease(20_999L, 21_000L, 15_000L))
+        assertTrue(state.onConnectRequested(true, 21_001L))
+        assertFalse(state.isYielding(21_001L))
+    }
+
+    @Test
+    fun nativeMediaReturnCannotCancelAUserDisconnectDuringHandoff() {
+        state.yieldRemotely(1, 1_000L)
+        state.disconnectLocally()
+        assertEquals(LeaHandoffState.ContextChange.NONE,
+                state.onAvailableContexts(1, 0x0fff, 1_200L))
+        assertFalse(state.onConnectRequested(false, 1_300L))
+        assertTrue(state.onConnectRequested(true, 1_400L))
+        assertFalse(state.isManuallyDisconnected())
+        assertFalse(state.isRemoteYielding())
+    }
+
+    @Test
+    fun aServiceReconnectDuringAnAmbiguousReleaseDoesNotReactivateTheGroup() {
+        state.yieldTemporarily(1_000L)
+        assertFalse(state.onConnectRequested(false, 2_000L))
+        assertFalse(state.onConnectRequested(false, 9_001L))
+        assertFalse(state.onConnectRequested(false, 31_000L))
+        assertTrue(state.isYielding(9_001L))
+        assertFalse(state.shouldHoldRelease(9_000L, 9_001L, 15_000L))
+        assertFalse(state.isYielding(31_001L))
+        assertTrue(state.onConnectRequested(false, 31_001L))
     }
 
     @Test
