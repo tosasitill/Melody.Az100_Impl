@@ -470,8 +470,8 @@ object LeAudioTransportHook {
      */
     private const val LEANBACK_ONLY = "android.software.leanback_only"
 
-    /** The adb-driven console; experiment scaffolding, not needed at runtime. */
-    private const val CONSOLE = true
+    /** Disabled in production; behavior hooks remain enabled. */
+    private const val CONSOLE = false
 
     private const val ACTION_KEY = "az100_action"
     private const val PROPERTY_KEY = "debug.az100.action"

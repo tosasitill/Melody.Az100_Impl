@@ -40,7 +40,7 @@ Follow the existing Kotlin style targeting JVM 17: four-space indentation, brace
 
 Keep the two runtime boundaries separate. Melody hooks must not depend on the Bluetooth-process classes being loaded, and Bluetooth hooks must not open the Airoha SPP link. Do not add a dependency on Technics Audio Connect. Share settings through libxposed remote preferences; do not restore world-readable files or legacy Xposed/YukiHookAPI entry points.
 
-`DIAGNOSE` only controls logging. Do not put a behavior hook behind it. `SPLICE_LE_AUDIO_UUIDS` must remain installed when diagnosis is off.
+`DIAGNOSE` only controls detailed trace logging. Do not put a behavior hook behind it. `SPLICE_LE_AUDIO_UUIDS` must remain installed when diagnosis is off. Production builds must keep the adb experiment console disabled; do not add a resident polling loop for diagnostics.
 
 For static APK/DEX inspection, prefer ASC (`droidasc`); use apktool/jadx for resources or smali and Frida for runtime behavior. Do not scan the whole disk for APKs; the local Audio Connect artifact is `audioconnect-4.4.0.apk` in the repository root.
 

@@ -8,10 +8,9 @@ import java.io.FileOutputStream
 /**
  * Single logging gate.
  *
- * [trace] is for the Airoha link and the hook timeline -- a handful of calls per
- * session, never a per-frame path.  It goes to logcat under tag `AZ100` and is
- * mirrored into a file the Bluetooth process owns, because logd drops messages
- * from a process as chatty as this one.
+ * [trace] is for the Airoha link and hook timeline. It is disabled by default and
+ * only writes when the user enables diagnosis. When enabled, it goes to logcat
+ * under tag `AZ100` and is mirrored into a file the Bluetooth process owns.
  *
  * [i] is for one-shot lifecycle events, so a broken install stays diagnosable
  * even when the trace file was never opened.
@@ -95,8 +94,9 @@ object Logs {
         }
     }
 
-    /** Airoha link timeline and hook events; never called on a hot path. */
+    /** Detailed timeline only; disabled unless the user enables diagnosis. */
     fun trace(message: String) {
+        if (!traceEnabled()) return
         Log.i(TRACE_TAG, message)
         val file = traceFile ?: return
         val line = "${System.currentTimeMillis()} $message\n"
@@ -122,6 +122,12 @@ object Logs {
 
     /** Same as [trace], for a failure worth recording too. */
     fun trace(message: String, t: Throwable) = trace("$message - $t")
+
+    private fun traceEnabled(): Boolean = try {
+        Prefs.diagnose
+    } catch (ignored: Throwable) {
+        false
+    }
 
     /** Move the current trace aside and start a fresh one. */
     private fun rotate(file: File) {

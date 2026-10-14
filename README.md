@@ -43,7 +43,7 @@ adb logcat -s AZ100:V
 adb shell su -c 'cat /data/misc/bluetooth/az100.log'
 ```
 
-启动日志同时记录到 logcat、libxposed logger 和进程文件，详细日志关闭时也记录入口加载和 hook 数量。蓝牙进程以 `/data/misc/bluetooth/az100.log` 为准；Melody 文件日志在 `/sdcard/Android/data/com.oplus.melody/files/az100.log`。
+启动版本、hook 数量和异常始终记录到 logcat 与 libxposed logger；详细 trace 只有打开“详细日志”后才写入 logcat 和文件。蓝牙进程的诊断文件为 `/data/misc/bluetooth/az100.log`；Melody 文件日志在 `/sdcard/Android/data/com.oplus.melody/files/az100.log`。稳定版默认关闭 trace 和 adb 实验控制台。
 
 ## 音量面板和电量
 
@@ -65,7 +65,7 @@ adb shell su -c 'cat /data/misc/bluetooth/az100.log'
 | 自动切换到 LE Audio | 开 | 关掉后 `connectLeaNow()` 直接返回，不再把重连升级成 LEA |
 | 自动连接另一只耳塞 | 开 | 一只连上后把同组另一只也连上 |
 | 音量修复 | 开 | 抬高低音量下限，并丢弃重复的绝对音量写入 |
-| 详细日志 | 关 | 对应原来的 `DIAGNOSE` 常量，只影响日志 |
+| 详细日志 | 关 | 开启 UUID、音量、RACE 和交接 trace；默认关闭，不影响行为 hook |
 
 「自动切换到 LE Audio」是下面那个问题的出口：用系统详情页的 LE Audio 开关关掉 LEA 后，ROM 会把音频回退到 LDAC，而 `onRemoteUuidsUpdated` 随后触发 `hookDirectLeaConnect`，把设备又升级回 LEA。关掉这个开关即可停止该行为，系统自带的 LE Audio 开关仍然有效。
 
@@ -73,12 +73,7 @@ adb shell su -c 'cat /data/misc/bluetooth/az100.log'
 
 模块设置页和 Melody 的设置入口都调用 `Prefs.save()`；本地与框架设置同步提交成功后才显示保存成功。`Az100ConfigProvider.call()` 保留为 Melody 的设置接口。
 
-修改会同步到已运行的目标进程；连接类开关在下次连接时应用，不需要重启蓝牙或手机。可通过控制台检查蓝牙进程实际读到的值：
-
-```bash
-adb shell su -c 'setprop debug.az100.action prefs'
-adb shell su -c 'tail -n 8 /data/misc/bluetooth/az100.log'
-```
+修改会同步到已运行的目标进程；连接类开关在下次连接时应用，不需要重启蓝牙或手机。稳定版关闭 adb 实验控制台；请使用设置页检查和修改配置。
 
 ## LE Audio
 
