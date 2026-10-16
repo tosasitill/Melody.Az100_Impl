@@ -1,8 +1,7 @@
 # macOS 侧工具
 
 在 Mac 上查看 / 切换 Technics EAH-AZ100 的降噪模式和电量。协议实现与 Android
-模块同源：都走 Airoha SPP/RACE（`05 5A <len LE16> <race id LE16> <payload>`），
-代码从 `AirohaRace.java` / `DirectAirohaController.java` 移植而来。
+模块同源，使用 Airoha SPP/RACE（`05 5A <len LE16> <race id LE16> <payload>`）；Android 侧实现位于 `AirohaRace.kt` / `DirectAirohaController.kt`，macOS 命令行版本则将 Swift 协议客户端内嵌在 `az100.sh` 中。
 
 | 文件 | 作用 |
 | --- | --- |
@@ -76,24 +75,22 @@ mkdir -p ~/.config/az100 && echo 'AZ100_MAC=AA:BB:CC:DD:EE:FF' > ~/.config/az100
 两只都不上报时显示充电盒）；点开可以切换四种模式、看左右耳和充电盒电量、
 开关 LE Audio（LC3）、手动刷新。耳机一断开，条目自动消失，期间不会去连耳机。
 
-### 功耗：没有轮询
+### 状态侦测与周期动作
 
-连接状态**完全由 IOBluetooth 通知驱动**（`registerForConnectNotifications` /
-`registerForDisconnectNotification`），没有任何定时轮询。静置实测
-**0.25 次唤醒/秒、0.00 mJ**（`proc_pid_rusage`，20 秒窗口）。
+连接状态通常由 IOBluetooth 通知（`registerForConnectNotifications` /
+`registerForDisconnectNotification`）驱动；经典蓝牙连接的通知并不始终可靠，因此当前 App 还每 5 分钟
+通过**子进程**运行一次 `az100ctl devices` 对账。静置功耗测试结果不能从旧版照搬到当前实现。
 
 > 为什么不能轮询：`IOBluetoothDevice` 在**同一个进程内是单例**（头文件原话：
 > "Within a single application, there will be only one instance of IOBluetoothDevice
 > for a given remote device address"），而它的 `isConnected()` **一旦为 true 就再也
 > 不会回到 false**。实测把 Mac 蓝牙整个关掉 30 秒，长驻进程里读到的还是 true，
-> 只有新起的进程才报 false。所以一开始那个 3 秒轮询既不准、还白耗唤醒。
+> 只有新起的进程才报 false。这也是不应在长驻进程里反复读此属性的原因；当前用子进程对账取得新的连接状态。
 >
 > 另外 `IOBluetoothDevice.pairedDevices()` 在蓝牙关闭时会**卡住不返回**，
 > 所以它也只用于启动时解析一次地址，绝不放进周期路径。
 
-只有两个额外动作：每 120 秒刷新一次电量（会开一次 RFCOMM），以及每 5 分钟
-用**子进程**跑一次 `az100ctl devices` 对账——子进程是唯一还能看到真实连接状态
-的地方，用来兜住漏掉的通知。
+除启动时探测外，当前还有两个周期动作：每 120 秒刷新一次电量（会按需打开 RFCOMM），每 5 分钟用**子进程**运行 `az100ctl devices` 对账，以补漏连接通知。
 
 App **不持有任何电源断言**（`pmset -g assertions` 里查不到本进程），不会阻止
 系统空闲睡眠；系统睡了它也跟着停。
@@ -115,8 +112,7 @@ App **不持有任何电源断言**（`pmset -g assertions` 里查不到本进�
   worker 线程。在里面直接碰 AppKit（建 `NSStatusItem` 等）会抛
   `NSWindow should only be instantiated on the main thread!` 并崩掉。
   回调里第一件事必须是 `DispatchQueue.main.async`。
-- `registerForConnectNotifications` 在注册时就会为**已连接**的设备补发一次
-  回调，所以启动时不需要额外探测；但两个都保留更稳。
+- `registerForConnectNotifications` 有时会为已连接的设备补发回调，但经典蓝牙通知不总可靠；启动时仍会安排探测，之后由子进程对账兜底。
 
 ## 环境变量
 

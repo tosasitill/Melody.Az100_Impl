@@ -2,7 +2,7 @@
 #
 # az100.sh — 在 macOS 上查看 / 切换 Technics EAH-AZ100 的降噪模式与电量。
 #
-# 协议来自本仓库的 Airoha SPP/RACE 实现（AirohaRace.java / DirectAirohaController.java）：
+# 协议来自本仓库的 Airoha SPP/RACE 实现（AirohaRace.kt / DirectAirohaController.kt）：
 #   RFCOMM/SPP 服务 "Airoha_APP" (UUID 00000000-0000-0000-0099-AABBCCDDEEFF)
 #   命令帧   05 5A <len LE16> <race id LE16> <payload>
 #   应答帧   05 5B <len LE16> <race id LE16> <status> ...
@@ -413,7 +413,7 @@ exit 0
 // az100ctl — Airoha SPP/RACE client for the Technics EAH-AZ100, over macOS IOBluetooth.
 //
 // The wire protocol was recovered from Audio Connect 4.4.0 and is reimplemented
-// in this repository (AirohaRace.java, DirectAirohaController.java):
+// in this repository (AirohaRace.kt, DirectAirohaController.kt):
 //
 //   transport : RFCOMM / SPP, service "Airoha_APP",
 //               UUID 00000000-0000-0000-0099-AABBCCDDEEFF (resolved through SDP)

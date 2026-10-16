@@ -12,7 +12,7 @@ Audio Connect 的 `DeviceMmiAiroha2.setConnection` 使用：
 - SPP UUID：`00000000-0000-0000-0099-AABBCCDDEEFF`
 - `H4Transport`
 
-模块只复用这条链路的帧格式。SPP 按次打开，命令完成或超时后关闭，不留常驻连接。
+模块仅复用这条链路的帧格式。Android 侧以按次打开的短连接完成一次状态读取或控制序列，序列结束或超时后关闭 SPP，不保留常驻会话。
 
 ## 帧格式
 
@@ -22,7 +22,13 @@ MMI 命令是 type `0x5A` 的 RACE 帧：
 05 5A <len LE16> <race id LE16> <payload>
 ```
 
-`len` 含 race id 和 payload。响应 type 是 `0x5B`；部分数据随后用 `0x5D` 异步通知。`AirohaMmiMgr` 的响应超时是 6000 ms。
+`len` 含 RACE ID 两字节和 payload 字节数，不含 channel、type 和长度字段；RACE 总帧长是 `4 + len`。因此写 OutsideCtrl 的 3 字节 payload 长度为 `5`：
+
+```text
+05 5A 05 00 0B 00 <mode> <noise> <ambient>
+```
+
+响应 type 是 `0x5B`；部分数据随后用 `0x5D` 异步通知。Audio Connect 的 `AirohaMmiMgr` 响应超时为 6000 ms；Android 模块也使用 6000 ms RACE 应答超时。
 
 ## 降噪
 
@@ -31,9 +37,9 @@ MMI 命令是 type `0x5A` 的 RACE 帧：
 - 读：RACE ID `10`
 - 写：RACE ID `11`
 - payload：`mode, noiseCancelLevel, ambientLevel`
-- 写帧：`05 5A 03 00 0B 00 <mode> <noise> <ambient>`
+- 写帧：`05 5A 05 00 0B 00 <mode> <noise> <ambient>`
 
-`OutsideCtrl` 默认 `noiseCancelLevel=0`、`ambientLevel=10`。响应状态 `0` 表示成功。
+`OutsideCtrl` 在反编译出的 Audio Connect 模型里默认 `noiseCancelLevel=0`、`ambientLevel=10`；这只是官方模型的字段默认值，不是当前 Android 模块发出的默认值。模块的 `DirectAirohaController` 在尚未收到有效回报时使用 `100/100`，收到耳机报告的 `1..100` 后才更新缓存并沿用。AZ100 对 `0/10` 这类旧默认值可能返回状态 `1`（拒绝），因此不能把反编译模型默认值当成可写参数。响应状态 `0` 表示成功。
 
 音量面板只轮换三个值：
 
@@ -51,9 +57,9 @@ MMI 命令是 type `0x5A` 的 RACE 帧：
 - TWS 电量：RACE ID `3286`
 - 充电盒：RACE ID `64`
 
-`3286` 先回 `0x5B` ACK，电量本体在随后的 `0x5D`。两次读经常落在同一个 RFCOMM 包里，解析时不能因为等 ACK 丢掉另一帧。
+`3286` 的 ACK 和电量本体经常落在同一个 RFCOMM 包里，解析时不能因为等 ACK 丢掉另一帧。值大于 100 按未知处理。
 
-从耳可能 5–10 秒才上报，也可能不上报。大于 100 的值按未知处理。刷新时先拿主耳方向，再等 ACK 和异步通知，两边都到了才关 SPP。
+Android 模块先读主耳方向，再依次请求 TWS role `0` 和 `1`。每个请求先等待 `0x5B` ACK，再最多等待 6000 ms 的匹配 `0x5D` 电量通知；通知缺失时保留已有缓存，无缓存则仍为未知，并继续后续请求，不保证一定收到左右耳数据后才关闭 SPP。最后读取充电盒并在本轮命令序列结束后关闭短连接。只有收到对应数据时才更新该侧缓存，超过 100 的上报值会将该侧置为未知。Mac 工具则按自己的命令超时收集通知。
 
 ## LE Audio 固件开关
 
