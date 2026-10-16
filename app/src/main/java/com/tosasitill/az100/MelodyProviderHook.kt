@@ -155,13 +155,17 @@ object MelodyProviderHook {
                     )
                 }.hook {
                     after {
+                        val original = result as? Cursor
                         val patched = patch(
                             args[0] as? Uri,
                             args[2] as? String,
                             args[3] as? Array<String>,
-                            result as? Cursor
+                            original
                         )
-                        if (patched != null) result = patched
+                        if (patched != null) {
+                            result = patched
+                            closeReplaced(original, patched)
+                        }
                     }
                 }
                 provider.resolve().optional(silent = true).firstMethod {
@@ -193,6 +197,29 @@ object MelodyProviderHook {
     /* ------------------------------------------------------------------ */
     /* provider contract                                                   */
     /* ------------------------------------------------------------------ */
+
+    /**
+     * Close the cursor Melody returned once it has been replaced.
+     *
+     * `ContentProvider#query` transfers ownership of the returned cursor to the
+     * caller, and the caller only ever sees the replacement -- nothing else holds
+     * the original, so dropping the reference leaks whatever it owns (for the
+     * stock provider a SQLite cursor, with its window and file descriptor).
+     * SystemUI re-queries on every media-route callback, so this leaked once per
+     * callback for the lifetime of the process.
+     *
+     * Only called when [replacement] actually differs from [original]; a cursor
+     * we are still handing back must never be closed.  Failures are swallowed:
+     * a cursor that refuses to close is not a reason to fail the query.
+     */
+    private fun closeReplaced(original: Cursor?, replacement: Cursor) {
+        if (original == null || original === replacement) return
+        try {
+            original.close()
+        } catch (t: Throwable) {
+            Logs.d("closing replaced cursor failed: $t")
+        }
+    }
 
     /**
      * Answer the two queries the tile depends on.  A non-null return replaces
@@ -314,11 +341,15 @@ object MelodyProviderHook {
                     )
                 }.hook {
                     after {
+                        val original = result as? Cursor
                         val patched = patchBattery(
                             args[3] as? Array<String>,
-                            result as? Cursor
+                            original
                         )
-                        if (patched != null) result = patched
+                        if (patched != null) {
+                            result = patched
+                            closeReplaced(original, patched)
+                        }
                     }
                 }
             }
@@ -338,7 +369,7 @@ object MelodyProviderHook {
             return MatrixCursor(
                 arrayOf("macAddress", "headsetLeftBattery", "headsetRightBattery")
             ).apply {
-                addRow(arrayOf<Any?>(Az100Hook.AZ100_MAC, maxOf(left, 0), maxOf(right, 0)))
+                addRow(arrayOf<Any?>(Az100Hook.AZ100_MAC, known(left), known(right)))
             }
         }
         if (result == null) return null
@@ -359,9 +390,22 @@ object MelodyProviderHook {
                 )
             } while (result.moveToNext())
         }
-        cursor.addRow(arrayOf<Any?>(Az100Hook.AZ100_MAC, maxOf(left, 0), maxOf(right, 0)))
+        cursor.addRow(arrayOf<Any?>(Az100Hook.AZ100_MAC, known(left), known(right)))
         return cursor
     }
+
+    /**
+     * A side with no reading stays unknown rather than becoming `0`.
+     *
+     * `-1` is this module's "not reported yet" sentinel -- the only values
+     * `DirectAirohaController.onBattery` ever stores are `0..100` or `-1` -- and
+     * `0` is a real, meaningful battery level.  Coercing the sentinel with
+     * `maxOf(value, 0)` reported a drained battery for a side that had simply
+     * not answered yet, which is why the detail page uses `--` for the same
+     * case (`MelodyDetailBatteryHook.percent`).  Keep one convention: a side
+     * with nothing to report is left unknown.
+     */
+    private fun known(value: Int): Int = if (value in 0..100) value else -1
 
     /** Settings observes the provider URI; the flag value is not interpreted. */
     private fun notifyBatteryProvider() {

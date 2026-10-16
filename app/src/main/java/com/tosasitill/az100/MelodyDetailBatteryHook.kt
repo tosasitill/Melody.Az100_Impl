@@ -422,9 +422,16 @@ object MelodyDetailBatteryHook {
         }
         (control as? MenuItem)?.title = "正在读取"
 
+        // Every view this callback touches is held weakly.  The read is bounded
+        // (one RFCOMM round trip with a 6 s ceiling per stage) so the leak was
+        // never permanent, but the detail activity can be closed mid-read and a
+        // strong reference here kept its whole view tree alive until the socket
+        // answered -- the same reason `activityRef` was already weak.
         val activityRef = WeakReference(activity)
         val controlRef = (control as? View)?.let { WeakReference(it) }
         val itemRef = (control as? MenuItem)?.let { WeakReference(it) }
+        val connectionRef = connection?.let { WeakReference(it) }
+        val statusRef = status?.let { WeakReference(it) }
         DirectAirohaController.refreshBattery(activity, Az100Hook.AZ100_MAC) { values, fresh ->
             val host = activityRef.get() ?: return@refreshBattery
             host.runOnUiThread {
@@ -440,10 +447,10 @@ object MelodyDetailBatteryHook {
                     action.title = "刷新电量"
                 }
                 if (host.isFinishing || host.isDestroyed) return@runOnUiThread
-                updateConnection(host, connection)
+                updateConnection(host, connectionRef?.get())
                 updateBatteryValues(values, batteryValues, meters)
                 val text = resultText(values, fresh)
-                status?.text = text
+                statusRef?.get()?.text = text
                 Toast.makeText(host, text, Toast.LENGTH_LONG).show()
             }
         }

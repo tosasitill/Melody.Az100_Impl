@@ -184,10 +184,21 @@ object DirectAirohaController {
         session(context, address)?.reachable() == true
 
     /**
-     * True when any headset audio profile is still connected.  This uses the
-     * public profile state API, unlike `BluetoothAdapter.getConnectedDevices(int)`,
-     * which this ROM does not expose.  It only guards against treating our own SPP
-     * teardown as the headset leaving.
+     * True when one of the AZ100's audio profiles is still connected.
+     *
+     * This is the fallback the Melody side uses when its own ACL latch says the
+     * headset left: closing our short-lived SPP socket can be reported as an ACL
+     * drop even though A2DP/HFP never went away, and the tile must not disappear
+     * because of that.
+     *
+     * It asks about *this* headset, not about headsets in general.
+     * `BluetoothAdapter#getProfileConnectionState(int)` cannot name a device, so
+     * using it here meant any other connected headset -- a different pair of
+     * earbuds, a car kit -- kept the AZ100 tile alive and its presence latched
+     * after the AZ100 had actually gone.  The device-naming
+     * `BluetoothManager#getConnectedDevices(int)` is the primary route, and the
+     * profile-wide call is only consulted when the manager answers nothing at
+     * all (see [Session.probe]).
      */
     fun audioProfileConnected(context: Context?): Boolean {
         val adapter = try {
@@ -203,13 +214,68 @@ object DirectAirohaController {
             return false
         } ?: return false
 
+        val manager = try {
+            context?.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+        } catch (t: Throwable) {
+            Logs.trace("audio profile manager failed: $t")
+            null
+        }
+
+        var answered = false
+        if (manager != null) {
+            for (profile in PROBE_PROFILES) {
+                val state = connectedToAz100(manager, profile)
+                if (state >= 0) answered = true
+                if (state > 0) {
+                    Logs.trace("audio profile $profile connected to the headset")
+                    return true
+                }
+            }
+        }
+        if (answered) {
+            // The manager named the connected devices and the AZ100 was not among
+            // them.  That is a real answer, not a missing one.
+            Logs.trace("audio profiles answered, headset absent")
+            return false
+        }
+
+        // Nothing could name a device.  Fall back to the profile-wide state, which
+        // at least tells us whether the stack has audio up at all.
         val a2dp = profileState(adapter, BluetoothProfile.A2DP)
         val headset = profileState(adapter, BluetoothProfile.HEADSET)
         val leAudio = profileState(adapter, LE_AUDIO_PROFILE)
-        Logs.trace("audio profiles a2dp=$a2dp hfp=$headset le=$leAudio")
+        Logs.trace("audio profiles (unnamed) a2dp=$a2dp hfp=$headset le=$leAudio")
         return a2dp == BluetoothProfile.STATE_CONNECTED
                 || headset == BluetoothProfile.STATE_CONNECTED
                 || leAudio == BluetoothProfile.STATE_CONNECTED
+    }
+
+    /**
+     * `1` when [Az100Hook.AZ100_MAC] (or the second earbud's address) is among the
+     * profile's connected devices, `0` when the call succeeded but named none of
+     * them, `-1` when the call itself failed.
+     */
+    private fun connectedToAz100(manager: BluetoothManager, profile: Int): Int = try {
+        val devices = manager.getConnectedDevices(profile)
+        var found = 0
+        if (devices != null) {
+            for (device in devices) {
+                val address = try {
+                    device.address
+                } catch (t: Throwable) {
+                    null
+                }
+                if (Az100Hook.isAz100Mac(address)
+                    || Az100Hook.AZ100_LE_MAC.equals(address, ignoreCase = true)
+                ) {
+                    found = 1
+                    break
+                }
+            }
+        }
+        found
+    } catch (t: Throwable) {
+        -1
     }
 
     private fun profileState(adapter: BluetoothAdapter, profile: Int): Int = try {
@@ -898,7 +964,7 @@ object DirectAirohaController {
                         // -1 is EOF.  0 should not happen for a positive buffer,
                         // but spinning on it would peg a core.
                         if (n <= 0 || current !== socket) break
-                        Logs.trace("rx raw ${AirohaRace.hex(chunk.copyOf(n))}")
+                        Logs.trace { "rx raw ${AirohaRace.hex(chunk.copyOf(n))}" }
                         parser.feed(chunk, 0, n, sink)
                     }
                 } catch (t: Throwable) {
@@ -931,7 +997,7 @@ object DirectAirohaController {
                     write(frame)
                     flush()
                 }
-                Logs.trace("tx ${AirohaRace.hex(frame)}")
+                Logs.trace { "tx ${AirohaRace.hex(frame)}" }
                 true
             } catch (t: Throwable) {
                 Logs.trace("write failed: $t")
@@ -1013,7 +1079,7 @@ object DirectAirohaController {
             val type = frame.type
             val raceId = frame.raceId
             if (type == AirohaRace.TYPE_RESP || type == AirohaRace.TYPE_IND) {
-                Logs.trace("rx ${AirohaRace.hex(frame.raw)}")
+                Logs.trace { "rx ${AirohaRace.hex(frame.raw)}" }
             }
 
             // Outside-control indication: mode, noise level, ambient level.

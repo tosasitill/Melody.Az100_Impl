@@ -123,7 +123,24 @@ object Logs {
     /** Same as [trace], for a failure worth recording too. */
     fun trace(message: String, t: Throwable) = trace("$message - $t")
 
-    private fun traceEnabled(): Boolean = try {
+    /**
+     * [trace], but the message is only built when tracing is actually on.
+     *
+     * `Logs.trace("rx " + hex(frame))` formats the whole frame on every packet
+     * even with diagnosis off, which on the RFCOMM reader means allocating a
+     * string per frame for output that is then thrown away.  Callers with
+     * anything more expensive than a string literal should use this instead.
+     */
+    inline fun trace(build: () -> String) {
+        if (!traceEnabled()) return
+        trace(build())
+    }
+
+    /** Whether [trace] would write anything; for callers doing their own gating. */
+    val tracing: Boolean get() = traceEnabled()
+
+    @PublishedApi
+    internal fun traceEnabled(): Boolean = try {
         Prefs.diagnose
     } catch (ignored: Throwable) {
         false

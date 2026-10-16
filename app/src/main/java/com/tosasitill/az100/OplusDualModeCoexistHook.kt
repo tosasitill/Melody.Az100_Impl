@@ -3325,12 +3325,27 @@ object OplusDualModeCoexistHook {
     }
 
 
-    /** Same, for events that carry no address. */
+    /**
+     * Trace a reason once per process, with any embedded address redacted.
+     *
+     * Call sites append a raw address (`"leaExclusiveOn@" + address`), so the
+     * redaction happens here rather than at each of them -- one funnel is easier
+     * to keep correct, and a new call site cannot forget it.  The key stays the
+     * unredacted string: deduplication is per device, which is the useful
+     * granularity, and `REPORTED` is never written to the trace file.
+     */
     private fun noteOnce(reason: String) {
         if (REPORTED.add(reason)) {
-            Logs.trace("dual-coexist: " + reason);
+            Logs.trace("dual-coexist: " + redactAddresses(reason));
         }
     }
+
+    /** `AA:BB:CC:DD:EE:FF` anywhere in [text] becomes `**:**:**EE:FF`. */
+    private fun redactAddresses(text: String): String =
+        ADDRESS_IN_TEXT.matcher(text).replaceAll("**:**:**$2")
+
+    private val ADDRESS_IN_TEXT =
+        java.util.regex.Pattern.compile("([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){3}):([0-9A-Fa-f]{2}:[0-9A-Fa-f]{2})")
 
 
     /**
