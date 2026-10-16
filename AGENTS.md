@@ -13,7 +13,7 @@ The module uses the **libxposed API 102 modern entry directly** -- there is no Y
 
 Installing the APK does not by itself prove the module loads; confirm the loaded version from the current process log.
 
-Read `README.md` for current runtime behavior and `docs-audio-connect.md` for the RACE frames. Dated reports under the repository root are evidence logs; `README.md` wins when they disagree. JVM tests under `app/src/test/java` cover protocol parsing, hook callback semantics, connection gates, and handoff state.
+Read `README.md` for current runtime behavior and `docs/audio-connect.md` for the RACE frames. Dated reports under `docs/` are evidence logs; `README.md` wins when they disagree. JVM tests under `app/src/test/java` cover protocol parsing, hook callback semantics, connection gates, and handoff state.
 
 ## Build and Test
 

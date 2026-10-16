@@ -152,9 +152,9 @@ OPPO 自家耳机的直连入口是 `OplusDualModeManagerImpl.onRemoteUuidsUpdat
 
 历史验证：2.0.8 曾在 **PLJ110 / Android 17 / PLJ110_17.0.0.101(CN01)** 验证入口、native patch 和 LE Audio active 输出；随后用户报告临时音频探针导致黑屏及无法重启，相关测试方式已在 `AGENTS.md` 禁止。2.0.9 曾通过离线测试及 debug/release 构建并覆盖安装；**2026-10-14 22:14:58 的 Bluetooth 入口日志确认加载 2.0.9 / 43、libxposed API 102，用户随后确认使用正常。** 这不构成 2.0.10 的验证。安装和开关蓝牙均不保证目标进程退出；需结合本次进程的版本日志确认加载，详细日志关闭时不要依赖旧 trace 文件。
 
-此前仍运行 2.0.8 时，用户确认手动断开有效，但电脑没有音频。对应快照中手机 native group 为 IDLE、CIG=NONE、CIS=0；Mac 已完成 AAC 配置，但 AVDTP 的最后一条媒体状态为 OPENING，CoreAudio 没有发布耳机输出。那次连接中菜单栏工具的自动 RFCOMM 读取与媒体建立并行，尚未证明其因果关系；历史证据见 [Mac 媒体通道排查](2026-10-14_mac-audio-publish-stall.md)。
+此前仍运行 2.0.8 时，用户确认手动断开有效，但电脑没有音频。对应快照中手机 native group 为 IDLE、CIG=NONE、CIS=0；Mac 已完成 AAC 配置，但 AVDTP 的最后一条媒体状态为 OPENING，CoreAudio 没有发布耳机输出。那次连接中菜单栏工具的自动 RFCOMM 读取与媒体建立并行，尚未证明其因果关系；历史证据见 [Mac 媒体通道排查](docs/2026-10-14_mac-audio-publish-stall.md)。
 
-手动断开和电脑交接的修复与验证边界见 `2026-10-14_manual-disconnect-and-handoff-fix.md`。回滚与挂载排查见 `2026-10-14_modern-hook-and-audio-fix.md`；先前的电脑交接记录见 `2026-10-14_lea-host-handoff-fix.md`。
+手动断开和电脑交接的修复与验证边界见 `docs/2026-10-14_manual-disconnect-and-handoff-fix.md`。回滚与挂载排查见 `docs/2026-10-14_modern-hook-and-audio-fix.md`；先前的电脑交接记录见 `docs/2026-10-14_lea-host-handoff-fix.md`。
 
 ### 设置里的开关
 
@@ -233,6 +233,6 @@ cd macos
 ./az100-menubar.sh
 ```
 
-细节见 `macos/README.md`。协议字节见 `docs-audio-connect.md`。
+细节见 `macos/README.md`。协议字节见 `docs/audio-connect.md`。
 
 根目录所有 `2026-*.md` 都是对应日期的排查证据，保留当时版本、实验开关和验证边界，不随当前迁移改写。使用和开发说明以本文件为准；判定实际运行版本仍以当前进程日志为准。
