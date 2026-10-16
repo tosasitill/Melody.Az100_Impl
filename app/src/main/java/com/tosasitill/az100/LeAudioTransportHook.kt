@@ -152,12 +152,11 @@ object LeAudioTransportHook {
     private const val AUTO_CONFIRM = false
 
     /**
-     * Stop the LE "Just Works" consent dialog from ever being raised.
+     * Stop the LE "Just Works" consent dialog from being raised for the AZ100.
      *
-     * This is the lever that actually works, and it is reachable from Java.  Both
-     * places that raise the consent -- `smp_process_peer_nonce`'s JUSTWORKS branch
-     * and `smp_decide_association_model`'s ENCRYPTION_ONLY branch -- share one
-     * guard:
+     * Both places that raise the consent -- `smp_process_peer_nonce`'s JUSTWORKS
+     * branch and `smp_decide_association_model`'s ENCRYPTION_ONLY branch -- share
+     * one guard:
      *
      * ```
      * if (!GetInterfaceToProfiles()->config->isAndroidTVDevice() &&
@@ -170,20 +169,41 @@ object LeAudioTransportHook {
      * ```
      *
      * The phone advertises `KeyboardDisplay`, so the first half is true.  The other
-     * half, `isAndroidTVDevice()`, is a value this build computes in Java and hands
-     * to the stack once at start-up: `AdapterService.onCreate` does
+     * half, `isAndroidTVDevice()`, is computed in Java and handed to the stack once
+     * at start-up: `AdapterService.init` does
      * `getPackageManager().hasSystemFeature("android.software.leanback_only")` and
      * passes the result as the 6th argument of `AdapterNativeInterface#init`, whose
-     * JNI forwards it verbatim as `isAtvDevice` to
-     * `sBluetoothInterface->init(...)`.  Making that one boolean `true` collapses the
-     * guard, so the stack runs Just Works with no consent and no dialog at all.
+     * JNI forwards it verbatim as `isAtvDevice`.
+     *
+     * This module used to fake that one Java call.  It worked, but the flag is read
+     * **once**, at process start, and then lives in native as a global for the whole
+     * process lifetime -- so the spoof could not be scoped to the AZ100 even in
+     * principle: at process start nothing is pairing yet, and every other device
+     * paired later inherited it.  The whole Bluetooth process believed it was an
+     * Android TV.
+     *
+     * The suppression is therefore done per device, in native, by
+     * [NativeLeaDeviceHook]: `oplus_handle_le_audio_ssp_auto_consent(RawAddress const&)`
+     * is the vendor's own per-address consent decision, and the patch makes it answer
+     * the AZ100 exactly the way it already answers OPPO's own earbuds
+     * (`btif_dm_ssp_reply(addr, CONSENT, 1)`, then return false so no dialog is
+     * raised).  Every other address still reaches the original body and keeps stock
+     * behaviour.
      *
      * Scope and blast radius: this only suppresses the *consent prompt* for LE Just
-     * Works / encryption-only pairing, which is exactly the behaviour a TV build
-     * already has.  It does not weaken or skip pairing, and it is one flag away from
-     * being reverted.
+     * Works / encryption-only pairing of the AZ100, which is exactly the behaviour a
+     * TV build already has.  It does not weaken or skip pairing, and it is one switch
+     * away from being reverted -- set this to false and the consent patch is not
+     * installed.
      */
     private const val BYPASS_CONSENT = true
+
+    /**
+     * Whether the per-device consent suppression should be installed.  Read by
+     * [NativeLeaDeviceHook], which owns the actual patch; kept here so the switch
+     * that documents the behaviour is also the one that controls it.
+     */
+    internal val consentBypassEnabled: Boolean get() = BYPASS_CONSENT
 
     /**
      * How long to wait after the pairing request before answering it.  Long enough
@@ -465,8 +485,11 @@ object LeAudioTransportHook {
     )
 
     /**
-     * The feature string `AdapterService.onCreate` reads to decide whether this
-     * device is a TV.  Faking it is the consent bypass; see [BYPASS_CONSENT].
+     * The feature string `AdapterService.init` reads once to decide whether this
+     * device is a TV.  Kept for reference only: faking it was the old consent
+     * bypass and is deliberately no longer done, because the answer becomes a
+     * process-wide native global that cannot be scoped to the AZ100.  See
+     * [BYPASS_CONSENT].
      */
     private const val LEANBACK_ONLY = "android.software.leanback_only"
 
@@ -615,8 +638,14 @@ object LeAudioTransportHook {
         // stuck.
         hookVolumeBehavior(param)
         if (diagnose()) hookVolumeDiagnostics(param)
-        if (suppressRedundantVcsWrites()) hookVolumeWriteGuard(param)
-        if (twinAutoConnect()) hookLeAudioTwin(param)
+        // Both of these read their preference at call time rather than here, so
+        // the settings page is telling the truth when it says a change takes
+        // effect on the next connection: registering them conditionally meant a
+        // switch flipped after the Bluetooth process started did nothing at all
+        // until the process was restarted, which is not something the UI asks for
+        // or the user can see.
+        hookVolumeWriteGuard(param)
+        hookLeAudioTwin(param)
         if (CONSOLE) startConsole(param)
     }
 
@@ -727,43 +756,28 @@ object LeAudioTransportHook {
     /**
      * The consent-dialog bypass, plus the measurement that proves it landed.
      *
-     * Two hooks, both on the Java side of the Bluetooth process:
+     * The bypass itself is **not** here any more.  It used to answer `true` for
+     * `hasSystemFeature("android.software.leanback_only")`, which is the one
+     * input `AdapterService.onCreate` reads when deciding whether the stack may
+     * raise the LE consent prompt.  That worked, but it made the entire
+     * Bluetooth process believe it was an Android TV for its whole lifetime --
+     * the flag is read once at startup (`AdapterService.init`, see
+     * `AdapterService.java:3219`) and handed to native as a global, so it could
+     * never be narrowed to the AZ100, and at process start no device is pairing
+     * yet anyway.  Every other device paired in that process inherited the
+     * spoof.
      *
-     * 1. `ApplicationPackageManager#hasSystemFeature(String)` -- answer `true` for
-     *    `android.software.leanback_only`.  This is the one input
-     *    `AdapterService.onCreate` reads when deciding whether the stack may raise the
-     *    LE consent prompt, so faking it here is what actually suppresses the dialog.
-     * 2. `AdapterNativeInterface#init` -- read-only, logs all seven arguments so the
-     *    6th can be seen flipping to `true`.  Without this there is no way to tell
-     *    "the hook worked" apart from "the value never reached the stack".
+     * The dialog is now suppressed per device instead, in
+     * [NativeLeaDeviceHook]'s consent patch: `oplus_handle_le_audio_ssp_auto_consent()`
+     * takes the peer address, and for the AZ100 it answers the request the same
+     * way OPPO answers it for its own earbuds.  See [BYPASS_CONSENT].
      *
-     * Order matters: the package-manager hook must be in place before
-     * `AdapterService.onCreate` runs. `onPackageReady` installs this before
-     * `Application.attach`, so the ordering is safe.
+     * What remains here is the measurement: `sendPairingRequestIntent` is hooked
+     * in [hookPairingRequest], and this logs the `AdapterNativeInterface#init`
+     * arguments so the 6th can be seen.  Both are trace-only.
      */
     private fun hookConsentBypass(param: HookRuntime) {
         val classLoader = loader ?: return
-        try {
-            val manager = Reflect.findClass(
-                "android.app.ApplicationPackageManager", classLoader
-            )
-            with(param) {
-                manager.resolve().optional(silent = true).method { name = "hasSystemFeature" }
-                    .hookAll {
-                        before {
-                            val args = args
-                            if (args.isEmpty()) return@before
-                            if (LEANBACK_ONLY != args[0]) return@before
-                            result = true
-                            Logs.trace("consent: hasSystemFeature($LEANBACK_ONLY) -> true")
-                        }
-                    }
-            }
-            Logs.trace("consent: hooked ApplicationPackageManager#hasSystemFeature")
-        } catch (t: Throwable) {
-            Logs.trace("consent: cannot hook hasSystemFeature", t)
-        }
-
         try {
             val nativeInterface = Reflect.findClass(
                 "com.android.bluetooth.btservice.AdapterNativeInterface", classLoader
@@ -1356,6 +1370,11 @@ object LeAudioTransportHook {
     private val pendingPush = ThreadLocal<PendingPush?>()
 
     private fun guardVolumeWrite(param: HookCall) {
+        // Registered unconditionally; the switch is read here so that turning the
+        // volume fix off stops it immediately instead of at the next process
+        // start.  Returning without setting `result` leaves the original call
+        // untouched, which is exactly the unfixed behaviour.
+        if (!suppressRedundantVcsWrites()) return
         val args = param.args
         if (args.size < 2) return
         val wanted = args[1] as? Int ?: return
@@ -1813,15 +1832,33 @@ object LeAudioTransportHook {
         return sb.toString()
     }
 
-    /** Addresses are device-specific data, so only the tail is ever logged. */
+    /**
+     * A raw address, redacted the same way [mask] redacts a string one.
+     *
+     * Addresses are device-specific data, so only the tail is logged -- the
+     * previous version printed all six octets despite this comment claiming
+     * otherwise, which put a full Bluetooth address into the trace file on every
+     * `devicePropertyChangedCallback`.
+     *
+     * Which two octets survive depends on the wire order, which this file cannot
+     * pin down -- [isAz100RawAddress] deliberately accepts either direction --
+     * so the last two are kept and four of six are always redacted.  That is the
+     * property that matters here; it need not agree octet-for-octet with [mask].
+     *
+     * Anything that is not an address-sized array is reported by length instead:
+     * this helper is only ever called on the address argument, but guessing at a
+     * longer buffer would be worse than saying so.
+     */
     private fun hex(raw: ByteArray?): String {
         if (raw == null) return "null"
-        val sb = StringBuilder()
-        for (b in raw) {
-            sb.append(Character.forDigit((b.toInt() shr 4) and 0xF, 16))
-            sb.append(Character.forDigit(b.toInt() and 0xF, 16))
+        if (raw.size != 6) return "${raw.size}B"
+        val tail = StringBuilder()
+        for (i in 4 until 6) {
+            if (tail.isNotEmpty()) tail.append(':')
+            val b = raw[i].toInt() and 0xFF
+            tail.append(Character.forDigit(b shr 4, 16)).append(Character.forDigit(b and 0xF, 16))
         }
-        return sb.toString()
+        return "**:**:$tail"
     }
 
     private fun spliceLeAudioUuid(param: HookRuntime, properties: Class<*>) {
@@ -2393,6 +2430,8 @@ object LeAudioTransportHook {
                             if (args.isEmpty()) return@after
                             val device = args[0] as? BluetoothDevice ?: return@after
                             if (hasThrowable == true || result != true) return@after
+                            // Read here, not at install time: see install().
+                            if (!twinAutoConnect()) return@after
                             // Only an explicit local selection clears TWIN_BLOCKED.
                             // Policy retries reach this same hook too.
                             connectTwin(instanceOrNull, device)

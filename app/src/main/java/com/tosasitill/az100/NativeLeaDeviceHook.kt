@@ -129,11 +129,24 @@ object NativeLeaDeviceHook {
         try {
             val rc = nativePatch()
             Logs.trace("native: patch rc=$rc ($why)")
-            if (rc == 0 || rc == 1) done = true
+            // The consent gate is independent of the LE-Audio gate, so it is
+            // attempted on every pass until it lands: a failure of one must not
+            // stop the other from being retried.
+            var consentRc = SKIPPED
+            if (LeAudioTransportHook.consentBypassEnabled) {
+                consentRc = nativeConsentPatch()
+                Logs.trace("native: consent patch rc=$consentRc ($why)")
+            }
+            if (rc == 0 || rc == 1) {
+                if (consentRc == 0 || consentRc == 1 || consentRc == SKIPPED) done = true
+            }
         } catch (t: Throwable) {
             Logs.e("native: patch failed ($why)", t)
         }
     }
+
+    /** `consentBypassEnabled` is off, so there was nothing to install. */
+    private const val SKIPPED = 2
 
     /* ------------------------------------------------------------------ */
     /* library loading                                                     */
@@ -213,10 +226,19 @@ object NativeLeaDeviceHook {
     }
 
     /**
-     * Backed by `libaz100patch.so`, whose export is
-     * `Java_com_tosasitill_az100_NativeLeaDeviceHook_nativePatch`.  The Kotlin
-     * `object` keeps the class name the symbol encodes, and the native side
-     * ignores both its arguments, so the receiver type does not matter.
+     * Backed by `libaz100patch.so`, whose exports are
+     * `Java_com_tosasitill_az100_NativeLeaDeviceHook_nativePatch` and
+     * `..._nativeConsentPatch`.  The Kotlin `object` keeps the class name the
+     * symbols encode, and the native side ignores both its arguments, so the
+     * receiver type does not matter.
+     *
+     * [nativePatch] rewrites `oplus_btif_is_lea_device` so it answers true for
+     * the AZ100's addresses only; [nativeConsentPatch] does the same for
+     * `oplus_handle_le_audio_ssp_auto_consent`, which is what suppresses the LE
+     * pairing consent dialog without making the whole process believe it is an
+     * Android TV.
      */
     private external fun nativePatch(): Int
+
+    private external fun nativeConsentPatch(): Int
 }
