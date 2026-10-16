@@ -109,10 +109,25 @@ object Prefs {
     val twin: Boolean get() = getBoolean(KEY_TWIN, DEFAULT_TWIN)
     val diagnose: Boolean get() = getBoolean(KEY_DIAGNOSE, DEFAULT_DIAGNOSE)
 
+    /**
+     * Last value each key was successfully read as.
+     *
+     * Without this, any failure of the remote read fell back to the compile-time
+     * default -- so a transient error would silently turn "auto upgrade to LE
+     * Audio" back *on* for a user who had turned it off.  That switch is the
+     * documented way out of the upgrade behaviour (see README), so quietly
+     * re-enabling it is the one failure mode worth avoiding here.  Once a key has
+     * been read successfully, later failures return what was last seen; only a
+     * key never yet read falls back to the default.
+     */
+    private val lastKnown = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
     private fun getBoolean(key: String, fallback: Boolean): Boolean = try {
-        hookedRemote?.getBoolean(key, fallback) ?: fallback
+        val value = hookedRemote?.getBoolean(key, fallback) ?: fallback
+        lastKnown[key] = value
+        value
     } catch (t: Throwable) {
-        fallback
+        lastKnown[key] ?: fallback
     }
 
     fun isKnownKey(key: String?): Boolean = key != null && defaults.containsKey(key)

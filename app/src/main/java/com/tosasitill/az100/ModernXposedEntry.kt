@@ -24,7 +24,7 @@ class ModernXposedEntry : XposedModule() {
         val packageName = param.packageName
         if (packageName != Az100Hook.BLUETOOTH && packageName != Az100Hook.MELODY) return
         synchronized(installedPackages) {
-            if (!installedPackages.add(packageName)) return
+            if (packageName in installedPackages) return
         }
         val runtime = HookRuntime(this, param.classLoader)
         try {
@@ -51,6 +51,12 @@ class ModernXposedEntry : XposedModule() {
                 LeAudioTransportHook.install(runtime)
                 Logs.i("Bluetooth registered ${runtime.hookCount} hooks in $processName")
             }
+            // Recorded only once the install actually returned.  Marking it done
+            // up front meant a failure anywhere in this block left the package
+            // permanently uninstalled for the life of the process: the retry that
+            // `onPackageReady` would otherwise perform was refused by the very
+            // set that was supposed to make it idempotent.
+            synchronized(installedPackages) { installedPackages.add(packageName) }
         } catch (t: Throwable) {
             Logs.e("modern entry failed for $packageName", t)
             log(Log.ERROR, Logs.TAG, "modern entry failed for $packageName", t)
