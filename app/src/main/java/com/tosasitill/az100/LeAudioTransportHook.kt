@@ -614,6 +614,7 @@ object LeAudioTransportHook {
         // createBond/sendUuidsInternal both run on one.  Mirroring to a file the
         // Bluetooth process owns is the only channel that always works.
         Logs.traceToFile(File("/data/misc/bluetooth"))
+        hookAdapterServiceLifecycle(param)
         if (NATIVE_LEA_WHITELIST) NativeLeaWhitelistHook.install(param)
         NativeLeaDeviceHook.install(param)
         if (BASS_NPE_FIX) BassClientFixHook.install(param)
@@ -646,7 +647,6 @@ object LeAudioTransportHook {
         // or the user can see.
         hookVolumeWriteGuard(param)
         hookLeAudioTwin(param)
-        if (CONSOLE) startConsole(param)
     }
 
     /* ------------------------------------------------------------------ */
@@ -1211,6 +1211,16 @@ object LeAudioTransportHook {
                             val groupId = args[1] as? Int ?: return@before
                             val volume = args[2] as? Int ?: return@before
                             captureVolumeReport(args[0], groupId, volume, args[5] == true)
+                            // Capture actual headset state before converting for the
+                            // service cache and AudioManager's logical slider.
+                            val device = args[0] as? BluetoothDevice
+                            val ours = if (device != null) matchesAddress(addressOf(device))
+                                else az100Group(groupId)
+                            if (lowerVolumeFloor() && ours && mediaVolumeContext()
+                                && volume in 0..255
+                            ) {
+                                args[2] = LeAudioVolumeCurve.toLogical(volume)
+                            }
                             if (lowerVolumeFloor() && preserveLowAutonomousReport(
                                     instanceOrNull, args
                                 )
@@ -1381,14 +1391,13 @@ object LeAudioTransportHook {
         val key = keyOf(args[0]) ?: return
         if (wanted < 0 || wanted > 255) return
         val stock = clampLeAudioVolume(wanted)
-        // 1..15 would be raised to 16 by the method body itself, so those have
-        // to go straight to native to survive.
-        val volume = if (lowerVolumeFloor() && wanted > 0
-            && wanted < LEAUDIO_VOLUME_MIN
-        ) {
-            wanted
-        } else {
-            stock
+        // Apply the media curve once, at the last Java boundary. Service caches
+        // stay in logical units; LAST_PUSHED/LAST_REPORTED stay in headset units.
+        val mediaCurve = lowerVolumeFloor() && mediaVolumeContext()
+        val volume = when {
+            mediaCurve -> LeAudioVolumeCurve.toHeadset(wanted)
+            lowerVolumeFloor() -> wanted
+            else -> stock
         }
         val last = knownVolume(key)
         if (isNoOp(key, volume)) {
@@ -1402,7 +1411,7 @@ object LeAudioTransportHook {
         Logs.trace(
             "vcs: write ${maskKey(key)} = $volume"
                     + (if (volume != stock) {
-                        " (floor bypass, stock would send $stock)"
+                        " (logical=$wanted, mediaCurve=$mediaCurve, stock would send $stock)"
                     } else {
                         ""
                     })
@@ -1415,7 +1424,7 @@ object LeAudioTransportHook {
             return
         }
         // Record only after the original returned without an exception.  A
-        // failed bypass will actually send stock=16, never wanted=1..15.
+        // failed bypass sends the stock value rather than the mapped curve value.
         pendingPush.set(PendingPush(members, stock))
     }
 
@@ -1541,6 +1550,16 @@ object LeAudioTransportHook {
             Logs.trace("vcs: low-report preservation failed; stock path retained", t)
             false
         }
+    }
+
+    /** Calls carry no stream argument, so use the same contextual stream as VCS. */
+    private fun mediaVolumeContext(): Boolean = try {
+        val vcs = profileService("getVolumeControlService")
+        vcs != null && Reflect.callMethod(
+            vcs, "getBluetoothContextualVolumeStreamFromAudio"
+        ) == 3
+    } catch (t: Throwable) {
+        false
     }
 
     private fun profileService(getter: String): Any? = try {
@@ -1972,7 +1991,8 @@ object LeAudioTransportHook {
     /* the adb-driven console                                              */
     /* ------------------------------------------------------------------ */
 
-    private fun startConsole(param: HookRuntime) {
+    /** Volume group lookup needs the service even when the experiment console is off. */
+    private fun hookAdapterServiceLifecycle(param: HookRuntime) {
         val classLoader = loader ?: return
         try {
             with(param) {
@@ -1984,11 +2004,11 @@ object LeAudioTransportHook {
                     .hook {
                         after {
                             adapterService = instanceOrNull
-                            armConsole()
+                            if (CONSOLE) armConsole()
                         }
                     }
             }
-            Logs.trace("routeB: console anchor hooked")
+            Logs.trace("routeB: AdapterService lifecycle anchor hooked")
         } catch (t: Throwable) {
             Logs.trace("routeB: cannot hook AdapterService#onCreate", t)
         }

@@ -1,6 +1,6 @@
 # Technics EAH-AZ100 适配
 
-LSPosed 模块，`app/build.gradle` 声明的源码版本为 **2.0.10**（versionCode 44）；最近有实机入口日志和用户反馈确认的版本是 **2.0.9 / 43**，两者不能混用。
+LSPosed 模块，`app/build.gradle` 声明的源码版本为 **2.0.12**（versionCode 46）；最近有实机入口日志和用户反馈确认的版本是 **2.0.9 / 43**，两者不能混用。
 
 **2026-10-16 文档核对：当前工作区使用 libxposed API 102 现代入口 `ModernXposedEntry`，没有 YukiHookAPI 依赖。** 早前版本的本文件曾描述一次未落地的 YukiHookAPI 迁移，那与打包产物不符，已按实际源码更正。模块做两件分开的事：
 
@@ -22,7 +22,7 @@ gradle :app:assembleDebug -Dorg.gradle.java.home="$JAVA_HOME"
 
 ### 构建状态
 
-2026-10-16 使用 JDK 21 执行 `gradle :app:testDebugUnitTest :app:assembleDebug -Dorg.gradle.java.home="$JAVA_HOME"` 成功：**53 个 JVM 测试全部通过**，并生成 `app/build/outputs/apk/debug/app-debug.apk`。
+2026-10-16 使用 JDK 21 执行 `gradle :app:testDebugUnitTest :app:assembleDebug -Dorg.gradle.java.home="$JAVA_HOME"` 成功：**56 个 JVM 测试全部通过**，并生成 `app/build/outputs/apk/debug/app-debug.apk`。
 
 - 当前配置是 AGP **9.1.0**、Kotlin 插件 **2.4.21**、`compileSdk 37`、`targetSdk 35`、`minSdk 29`；Java 编译目标为 17。
 - 依赖只来自 `google()` 和 `mavenCentral()`，没有本地 Maven 仓库路径，也没有 KSP 或注解处理器。
@@ -92,14 +92,16 @@ adb shell su -c 'cat /data/misc/bluetooth/az100.log'
 | --- | --- | --- |
 | 自动切换到 LE Audio | 开 | 关掉后 `connectLeaNow()` 直接返回，不再把重连升级成 LEA |
 | 自动连接另一只耳塞 | 开 | 一只连上后把同组另一只也连上 |
-| 音量修复 | 开 | 解除非零 VCS 音量被抬至 16 的限制，让更低音量可用，并丢弃重复的绝对音量写入 |
+| 音量修复 | 开 | AZ100 媒体音量采用平方曲线，20% 滑块对应约 10/255；反向转换耳机回报，解除 16 的下限并过滤重复写入 |
 | 详细日志 | 关 | 开启 UUID、音量、RACE 和交接 trace；默认关闭，不影响行为 hook |
 
 「自动切换到 LE Audio」是下面那个问题的出口：用系统详情页的 LE Audio 开关关掉 LEA 后，ROM 会把音频回退到 LDAC，而 `onRemoteUuidsUpdated` 随后触发 `hookDirectLeaConnect`，把设备又升级回 LEA。关掉这个开关即可停止该行为，系统自带的 LE Audio 开关仍然有效。
 
 两个界面的读写最终都通过 libxposed remote preferences 使用 `az100` 这个存储名：`MainActivity` 先写模块私有 SharedPreferences，再由模块自己经 libxposed service 发布到 remote preferences；Melody 和 Bluetooth hook 进程读同一份 remote preferences，provider 仍作为 Melody 设置页的跨 UID 接口，仅接受四个已知设置键，并校验调用方 UID（本模块、Melody、root）。框架服务不可用时，设置页仍保留本地副本，但目标进程只能读到旧值或默认值。
 
-自动升级、双耳补连、音量修复和详细日志的默认值仍为开、开、开、关。这里的“已安装”与运行时开关要区分：自动升级和音量下限 / 重复写入判断会读取当前配置；但双耳补连 hook 只在蓝牙进程安装时开关为开才注册，音量重复写入 guard 也只在安装时开关为开才注册，详细日志的部分诊断专用 hook 同样在启动时决定。若这些功能在进程启动时关闭，之后把开关打开需要重新加载对应目标进程；本地保存成功不能补装 hook。稳定版 adb 实验控制台仍关闭。
+自动升级、双耳补连、音量修复和详细日志的默认值仍为开、开、开、关。双耳补连和音量写入 guard 无条件注册，在调用时读取当前配置；详细日志的部分诊断专用 hook 仍在进程启动时决定是否注册。`AdapterService` 实例捕获也无条件安装，使音量 group 识别不再依赖实验控制台。稳定版 adb 实验控制台仍关闭。
+
+2.0.12 在最后 Java 写入边界对 AZ100 媒体音量使用平方曲线，并把耳机回报反向转换后交给服务缓存和手机滑块；通话不应用曲线。0 保持静音，255 保持最大值。该曲线尚未完成实机听感验证；native 返回只证明已提交。实现和验证边界见 [媒体音量曲线记录](docs/2026-10-16_media-volume-curve.md)。
 
 ## LE Audio
 
@@ -148,7 +150,7 @@ OPPO 自家耳机的直连入口是 `OplusDualModeManagerImpl.onRemoteUuidsUpdat
 
 验证：先让手机通过 LE Audio 连接，再在电脑上连接并播放，等待至少 35 秒，确认声音留在电脑；随后在手机上选择耳机，确认 LE Audio 可以恢复。交接后不应有模块发起的 `A2DP reconnect requested` 或 `leaExclusiveOn`。
 
-仓库现有 **53 个 JVM 测试用例**：协议解析 13 个、hook 回调 9 个、连接门控 3 个、交接 / 断开状态 23 个、原生地址门控 5 个。2026-10-16 的 Gradle 验证全部通过，见「构建」。这些测试不覆盖 LSPosed 的入口加载、hook 的实际安装、跨进程配置同步或原生补丁的指令编码（后者靠反汇编和实机 `native: patch rc=` 日志确认）。
+仓库现有 **56 个 JVM 测试用例**：协议解析 13 个、hook 回调 9 个、连接门控 3 个、交接 / 断开状态 23 个、原生地址门控 5 个、音量曲线 3 个。2026-10-16 的 Gradle 验证全部通过，见「构建」。这些测试不覆盖 LSPosed 的入口加载、hook 的实际安装、跨进程配置同步或原生补丁的指令编码（后者靠反汇编和实机 `native: patch rc=` 日志确认）。
 
 历史验证：2.0.8 曾在 **PLJ110 / Android 17 / PLJ110_17.0.0.101(CN01)** 验证入口、native patch 和 LE Audio active 输出；随后用户报告临时音频探针导致黑屏及无法重启，相关测试方式已在 `AGENTS.md` 禁止。2.0.9 曾通过离线测试及 debug/release 构建并覆盖安装；**2026-10-14 22:14:58 的 Bluetooth 入口日志确认加载 2.0.9 / 43、libxposed API 102，用户随后确认使用正常。** 这不构成 2.0.10 的验证。安装和开关蓝牙均不保证目标进程退出；需结合本次进程的版本日志确认加载，详细日志关闭时不要依赖旧 trace 文件。
 

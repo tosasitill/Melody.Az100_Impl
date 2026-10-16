@@ -16,6 +16,7 @@
 
 | 文件 | 内容 |
 | --- | --- |
+| [2026-10-16_media-volume-curve.md](2026-10-16_media-volume-curve.md) | 修复服务实例捕获依赖实验控制台的问题；新增媒体音量平方曲线和反向同步转换，实机听感待验证 |
 | [2026-10-14_modern-hook-and-audio-fix.md](2026-10-14_modern-hook-and-audio-fix.md) | 接回 libxposed API 102 现代入口；修复 LE Audio 连接初始化误判交接、厂商 HFP 初始化清空输出 |
 | [2026-10-14_manual-disconnect-and-handoff-fix.md](2026-10-14_manual-disconnect-and-handoff-fix.md) | 手动断开后自动连回、以及手机连接时电脑无法接管的修复过程与时间线 |
 | [2026-10-14_mac-audio-publish-stall.md](2026-10-14_mac-audio-publish-stall.md) | Mac 侧 A2DP 媒体通道停在 OPENING、CoreAudio 不发布输出的证据快照（因果关系未证实） |

@@ -294,7 +294,7 @@ object MelodyDetailBatteryHook {
         addSettingSwitch(
             activity, palette, card, status, Prefs.KEY_VOLUME_FIX, Prefs.DEFAULT_VOLUME_FIX,
             "音量修复",
-            "抬高低音量下限，并丢弃重复的绝对音量写入。", current
+            "降低媒体音量前段增幅，解除低音量下限，并过滤重复写入。", current
         )
         card.addView(Ui.divider(activity, palette))
         addSettingSwitch(
