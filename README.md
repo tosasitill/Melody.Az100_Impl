@@ -150,13 +150,32 @@ OPPO 自家耳机的直连入口是 `OplusDualModeManagerImpl.onRemoteUuidsUpdat
 
 验证：先让手机通过 LE Audio 连接，再在电脑上连接并播放，等待至少 35 秒，确认声音留在电脑；随后在手机上选择耳机，确认 LE Audio 可以恢复。交接后不应有模块发起的 `A2DP reconnect requested` 或 `leaExclusiveOn`。
 
-仓库现有 **56 个 JVM 测试用例**：协议解析 13 个、hook 回调 9 个、连接门控 3 个、交接 / 断开状态 23 个、原生地址门控 5 个、音量曲线 3 个。2026-10-16 的 Gradle 验证全部通过，见「构建」。这些测试不覆盖 LSPosed 的入口加载、hook 的实际安装、跨进程配置同步或原生补丁的指令编码（后者靠反汇编和实机 `native: patch rc=` 日志确认）。
+仓库现有 **67 个 JVM 测试用例**：协议解析 13 个、hook 回调 9 个、连接门控 3 个、交接 / 断开状态 26 个、流故障回退 8 个、原生地址门控 5 个、音量曲线 3 个。2026-10-19 的 Gradle 验证全部通过（JDK 21，`:app:testDebugUnitTest :app:assembleDebug`），见「构建」。这些测试不覆盖 LSPosed 的入口加载、hook 的实际安装、跨进程配置同步或原生补丁的指令编码（后者靠反汇编和实机 `native: patch rc=` 日志确认）。
 
 历史验证：2.0.8 曾在 **PLJ110 / Android 17 / PLJ110_17.0.0.101(CN01)** 验证入口、native patch 和 LE Audio active 输出；随后用户报告临时音频探针导致黑屏及无法重启，相关测试方式已在 `AGENTS.md` 禁止。2.0.9 曾通过离线测试及 debug/release 构建并覆盖安装；**2026-10-14 22:14:58 的 Bluetooth 入口日志确认加载 2.0.9 / 43、libxposed API 102，用户随后确认使用正常。** 这不构成 2.0.10 的验证。安装和开关蓝牙均不保证目标进程退出；需结合本次进程的版本日志确认加载，详细日志关闭时不要依赖旧 trace 文件。
 
 此前仍运行 2.0.8 时，用户确认手动断开有效，但电脑没有音频。对应快照中手机 native group 为 IDLE、CIG=NONE、CIS=0；Mac 已完成 AAC 配置，但 AVDTP 的最后一条媒体状态为 OPENING，CoreAudio 没有发布耳机输出。那次连接中菜单栏工具的自动 RFCOMM 读取与媒体建立并行，尚未证明其因果关系；历史证据见 [Mac 媒体通道排查](docs/2026-10-14_mac-audio-publish-stall.md)。
 
 手动断开和电脑交接的修复与验证边界见 `docs/2026-10-14_manual-disconnect-and-handoff-fix.md`。回滚与挂载排查见 `docs/2026-10-14_modern-hook-and-audio-fix.md`；先前的电脑交接记录见 `docs/2026-10-14_lea-host-handoff-fix.md`。
+
+### 建立了流却无法出声：约 500 ms 的重试循环
+
+2026-10-19 用户复现时抓取的详细日志显示，播放时 ROM 会为媒体流配置**双向 CIS**：同一只耳塞既有 sink ASE 又有 source ASE。控制器接受输入数据通路，却用 `COMMAND_DISALLOWED` 拒绝输出通路：
+
+```text
+QOS_CONFIG: ASE 1,ASE 3,   snk,...;;src,...
+ENABLE: ASE_ID 1,ASE_ID 3, meta: 03020400020501;;meta: 03020100;;
+SET_ISO_DATA_PATH: direction 0x00 STATUS=0000
+SET_ISO_DATA_PATH: direction 0x01 STATUS=0x0c
+RELEASE: ASE_ID 1,ASE_ID 3,
+AF --> RESUME_REQ: LocalSource
+```
+
+AOSP 把数据通路失败当作致命错误，`StopStream()` 会释放 ASE、CIS 和 CIG；音频框架随即再次请求 resume，于是建立、失败、释放的循环以约 500 ms 的周期反复出现，而 LE ACL 一直保持连接。Java 层无法让控制器接受这个方向，只能停止继续请求。
+
+模块现在在三个时机做**一次性**探测（不是轮询）：LE Audio 激活后 2.5 秒、播放开始时、native 报告 group 流状态转为 IDLE 时。若 active group 仍属于 AZ100、手机正在使用音频、且连续两次都未进入 STREAMING，就打开让出窗口（60 秒起，每次翻倍，上限 300 秒）并调用 `removeActiveDevice(false)`，由仍然连接的 A2DP 接管声音。恢复 STREAMING 或在手机上重新选择耳机会清零升级计数。
+
+日志关键字：`LE Audio stream unavailable`、`leaStreamFallback`、`leaYieldWindow opened (leaStreamUnavailable)`。完整的日志证据与分析见 [LE Audio 流建立失败与重试循环](docs/2026-10-19_lea-stream-retry-loop.md)；JVM 测试只覆盖识别与升级状态机，控制器行为仍需实机确认。
 
 ### 设置里的开关
 

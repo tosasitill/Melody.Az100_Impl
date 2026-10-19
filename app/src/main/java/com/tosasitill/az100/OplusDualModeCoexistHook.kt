@@ -1,12 +1,17 @@
 package com.tosasitill.az100
 
 import android.bluetooth.BluetoothDevice
+import android.content.Context
+import android.media.AudioManager
+import android.media.AudioPlaybackConfiguration
 import android.os.ParcelUuid
 import android.os.SystemClock
 import com.highcapable.kavaref.KavaRef.Companion.resolve
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Makes OPPO's "dual mode" policy treat the AZ100 as an LE-Audio-coexistent
@@ -514,6 +519,50 @@ object OplusDualModeCoexistHook {
         private const val LEA_YIELD_WINDOW_MS = 30000L
 
 
+    /**
+     * When to check that an activated group can actually stream, and how long
+     * to hand the output back to classic when it cannot.
+     *
+     * <h2>The failure this covers (measured 2026-10-19)</h2>
+     *
+     * For media this ROM configures a bidirectional CIS -- a sink ASE and a
+     * source ASE in the same earbud.  The controller accepts the input data
+     * path and rejects the output one with {@code COMMAND_DISALLOWED}:
+     *
+     * <pre>
+     *   QOS_CONFIG: ASE 1,ASE 3,   snk,...;;src,...
+     *   ENABLE: ASE_ID 1,ASE_ID 3, meta: 03020400020501;;meta: 03020100;;
+     *   SET_DATA_PATH: direction 0x00 STATUS=0000
+     *   SET_DATA_PATH: direction 0x01 STATUS=0x0c
+     *   RELEASE: ASE_ID 1,ASE_ID 3,
+     *   AF --&gt; RESUME_REQ: LocalSource          // ~500 ms later, and again
+     * </pre>
+     *
+     * <p>AOSP treats the data-path failure as fatal ({@code StopStream()}
+     * releases the ASEs, the CIS and the CIG) and the audio framework instantly
+     * asks to resume, so the stream is created, fails and is torn down twice a
+     * second while the LE ACL never drops.  Java cannot make that controller
+     * direction work; it can only stop asking for it.
+     *
+     * <p>A working stream is STREAMING ~0.5 s after CODEC_CONFIG (measured
+     * 2026-10-11), so a group that is active, has audio in use, and is still
+     * not streaming a few seconds later is this failure rather than a slow
+     * start.  The first probe confirms, the second trips: hand the output back
+     * to classic and keep LE Audio out of the way for
+     * {@link #LEA_STREAM_HOLD_MS}, doubling on every further trip.
+     *
+     * <p>The probes are one-shot, armed by activation and by the single
+     * stream-status IDLE report; there is no polling loop.
+     */
+        private const val LEA_STREAM_PROBE_MS = 2500L
+
+        private const val LEA_STREAM_CONFIRM_MS = 1500L
+
+        private const val LEA_STREAM_HOLD_MS = 60000L
+
+        private const val LEA_STREAM_MAX_HOLD_MS = 300000L
+
+
     /** Holder of the {@code AdapterService} on each of the two hooked classes. */
         private const val ADAPTER_FIELD_ON_LEA_EXT = "mAdapterService"
 
@@ -594,6 +643,18 @@ object OplusDualModeCoexistHook {
         private val LEA_HANDOFF = LeaHandoffState(LEA_YIELD_WINDOW_MS)
         private val IN_LOCAL_LEA_SELECTION = ThreadLocal<Boolean>()
         private val IN_LOCAL_LEA_DISCONNECT = ThreadLocal<Boolean>()
+
+
+    /** Recognises a group that is active but cannot stream. */
+        private val LEA_STREAM_GUARD = LeaStreamGuard(LEA_STREAM_HOLD_MS, LEA_STREAM_MAX_HOLD_MS)
+
+
+    /** Rises on every arming; only the most recent scheduled probe runs. */
+        private val LEA_STREAM_PROBE_TOKEN = AtomicInteger(0)
+
+
+    /** One registration attempt at a time; reset while there is no context. */
+        private val PLAYBACK_GUARD_ARMED = AtomicBoolean(false)
 
 
     /**
@@ -717,6 +778,9 @@ object OplusDualModeCoexistHook {
                 hookNullDeviceProfileQuery(param);
             }
         }
+        // Outside the lock: registration is a binder call, and install() can run
+        // before Application.attach (then it does nothing; arming retries).
+        if (LE_AUDIO_TAKES_OVER) ensurePlaybackGuard();
     }
 
 
@@ -1299,6 +1363,7 @@ object OplusDualModeCoexistHook {
                         if (result != true) return@after;
                         leaActiveAt = SystemClock.elapsedRealtime();
                         note(device, "leAudioActive");
+                        armLeaStreamProbe("leAudioActive", LEA_STREAM_PROBE_MS);
                     }
                 }
 
@@ -1621,6 +1686,11 @@ object OplusDualModeCoexistHook {
             val autonomousInactive = Reflect.getStaticObjectField(eventClass, "GROUP_STATUS_AUTONOMOUS_INACTIVE") as Int;
             val groupHealth = Reflect.getStaticObjectField(eventClass, "EVENT_TYPE_HEALTH_BASED_GROUP_RECOMMENDATION") as Int;
             val inactivateGroup = Reflect.getStaticObjectField(eventClass, "HEALTH_RECOMMENDATION_ACTION_INACTIVATE_GROUP") as Int;
+            // Present on AOSP LeAudioStackEvent; a ROM without them simply does
+            // not get the IDLE trigger, the activation-time probe still runs.
+            val streamStatus = intConstantOr(eventClass, "EVENT_TYPE_GROUP_STREAM_STATUS_CHANGED", -1);
+            val streamIdle = intConstantOr(eventClass, "GROUP_STREAM_STATUS_IDLE", -1);
+            val streamStreaming = intConstantOr(eventClass, "GROUP_STREAM_STATUS_STREAMING", -1);
             with(param) {
                 service.resolve().optional(silent = true).firstMethod {
                     name = "messageFromNative"
@@ -1629,7 +1699,8 @@ object OplusDualModeCoexistHook {
                     before {
                         val event = args[0] ?: return@before;
                         val type = Reflect.getObjectField(event, "type") as? Int ?: return@before;
-                        if (type != audioConf && type != groupStatus && type != groupHealth) return@before;
+                        if (type != audioConf && type != groupStatus && type != groupHealth
+                                && type != streamStatus) return@before;
                         val first = Reflect.getObjectField(event, "valueInt1") as? Int ?: return@before;
                         val second = Reflect.getObjectField(event, "valueInt2") as? Int ?: return@before;
                         val groupId = if (type == audioConf) second else first;
@@ -1647,6 +1718,16 @@ object OplusDualModeCoexistHook {
                                     Logs.trace("dual-coexist: MEDIA returned, group=" + groupId);
                                 }
                                 LeaHandoffState.ContextChange.NONE -> Unit
+                            }
+                        } else if (type == streamStatus) {
+                            // Native dedupes these to state transitions, so the
+                            // single IDLE is the one Java-visible chance to ask
+                            // whether a resume keeps failing. STREAMING proves
+                            // the opposite and resets the escalation.
+                            if (second == streamStreaming) {
+                                LEA_STREAM_GUARD.onHealthyStream();
+                            } else if (second == streamIdle) {
+                                armLeaStreamProbe("streamIdle", LEA_STREAM_CONFIRM_MS);
                             }
                         } else if ((type == groupStatus && second == autonomousInactive)
                                 || (type == groupHealth && second == inactivateGroup)) {
@@ -1674,6 +1755,16 @@ object OplusDualModeCoexistHook {
         }
         hookLocalLeaSelection(param, "com.android.bluetooth.le_audio.LeAudioServiceBinder", "connect");
         hookLocalLeaSelection(param, "com.android.bluetooth.btservice.AdapterServiceBinder", "connectAllEnabledProfiles");
+    }
+
+
+    /** A static int on [clazz], or [fallback] when this ROM does not have it. */
+    private fun intConstantOr(clazz: Class<*>, name: String, fallback: Int): Int {
+        return try {
+            (Reflect.getStaticObjectField(clazz, name) as? Int) ?: fallback;
+        } catch (ignored: Throwable) {
+            fallback;
+        }
     }
 
 
@@ -1956,6 +2047,9 @@ object OplusDualModeCoexistHook {
                                         "setActiveGroupWithDevice", device, false);
                                 result = ok;
                                 note(device, "groupActivated=" + ok);
+                                if (ok == true) {
+                                    armLeaStreamProbe("groupActivated", LEA_STREAM_PROBE_MS);
+                                }
                             } catch (t: Throwable) {
                                 Logs.trace("dual-coexist: setActiveGroupWithDevice failed - " + t);
                             }
@@ -2710,6 +2804,162 @@ object OplusDualModeCoexistHook {
     }
 
 
+    /**
+     * Ask, once, whether the newly activated LE Audio group is streaming.
+     *
+     * <p>There is no event that fires for every failed attempt: native dedupes
+     * group stream status to state transitions and never reports STREAMING at
+     * all while a data path fails, so the Java layer has to look for itself.
+     * One-shot by design -- no resident polling loop.  A newer arming cancels
+     * the older timer via {@link #LEA_STREAM_PROBE_TOKEN}.
+     */
+    private fun armLeaStreamProbe(reason: String, delayMs: Long) {
+        // Activation is also the first moment with a usable context; this is a
+        // no-op once the playback callback has been registered.
+        ensurePlaybackGuard();
+        val token = LEA_STREAM_PROBE_TOKEN.incrementAndGet();
+        DEFERRED.schedule(object : Runnable {
+            override fun run() {
+                if (token != LEA_STREAM_PROBE_TOKEN.get()) return;
+                try {
+                    runLeaStreamProbe(reason);
+                } catch (t: Throwable) {
+                    Logs.trace("dual-coexist: LE Audio stream probe failed - " + t);
+                }
+            }
+        }, delayMs, TimeUnit.MILLISECONDS);
+    }
+
+
+    private fun runLeaStreamProbe(reason: String) {
+        if (inLeaYieldWindow()) return;
+        val lea = leaServiceRef ?: return;
+        // The group must still be the active output for an AZ100; otherwise a
+        // non-streaming status says nothing.
+        if (!activeGroupHasConnectedAz100(lea)) return;
+        val groupId = activeGroupId(lea);
+        if (groupId == -1) return;
+        val audio = audioInUse();
+        when (val action = LEA_STREAM_GUARD.onProbe(
+                groupId, leaOutputStreaming(lea), audio)) {
+            LeaStreamGuard.Action.None -> Unit
+            LeaStreamGuard.Action.Confirm ->
+                armLeaStreamProbe("streamProbeConfirm", LEA_STREAM_CONFIRM_MS);
+            is LeaStreamGuard.Action.Hold -> {
+                Logs.trace("dual-coexist: LE Audio stream unavailable, group=" + groupId
+                        + " audio=" + audio + " (" + reason + ")");
+                handBackToClassic(lea, groupId, action.durationMs);
+            }
+        }
+    }
+
+
+    /**
+     * The group is active but cannot stream, so leave it for classic audio.
+     *
+     * <p>Deactivating through {@code removeActiveDevice(false)} reaches
+     * {@code setActiveGroupWithDevice(null, ...)} and its
+     * {@code handleGroupTransitToInactive()}, which tells AudioService that LE
+     * Audio no longer owns the output.  The still-connected A2DP link then
+     * carries the audio.  {@code false} means "no fallback device" -- the
+     * module does not dial anything itself; {@link #classicMustStayDown} also
+     * turns false once the yield window is open.
+     *
+     * <p>The window is opened first: it both suppresses every automatic LE
+     * Audio activation path and stops the ROM from reading this teardown as a
+     * hand-over to another host.
+     */
+    private fun handBackToClassic(leaService: Any, groupId: Int, holdMs: Long) {
+        Logs.trace("dual-coexist: leaStreamFallback group=" + groupId + " hold=" + holdMs);
+        openLeaYieldWindow("leaStreamUnavailable", holdMs);
+        try {
+            Reflect.callMethod(leaService, "removeActiveDevice",
+                    arrayOf<Class<*>>(java.lang.Boolean.TYPE), false);
+            noteOnce("leaStreamFallbackDone");
+        } catch (t: Throwable) {
+            Logs.trace("dual-coexist: LE Audio stream fallback failed - " + t);
+        }
+    }
+
+
+    /**
+     * Is the phone rendering or capturing audio right now?
+     *
+     * <p>An idle group is <em>supposed</em> to be non-streaming -- the working
+     * trace shows a normal idle suspend every ~15 s -- so only an observation
+     * made while audio is in use says anything about the stream.  Answered
+     * from the Bluetooth process's application context; no context means "not
+     * in use", which keeps the probe quiet rather than guessing.
+     */
+    private fun audioInUse(): Boolean {
+        val context = applicationContext() ?: return false;
+        return try {
+            val audio = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager;
+            audio != null && (audio.isMusicActive || audio.mode != AudioManager.MODE_NORMAL);
+        } catch (ignored: Throwable) {
+            false;
+        }
+    }
+
+
+    private fun applicationContext(): Context? {
+        RuntimeEnvironment.application?.let { return it; }
+        val classLoader = loader ?: return null;
+        return try {
+            Reflect.callStaticMethod(
+                    Reflect.findClass("android.app.ActivityThread", classLoader),
+                    "currentApplication") as? Context;
+        } catch (ignored: Throwable) {
+            null;
+        }
+    }
+
+
+    /**
+     * Probe again when playback starts.
+     *
+     * <p>The activation-time probe covers the usual case, but the group can
+     * sit active and idle long before the user presses play -- and an idle
+     * group is supposed to be non-streaming, so that earlier probe correctly
+     * said nothing.  This is an event callback, not a poll: it does nothing
+     * until some app starts playing, and {@link #runLeaStreamProbe} ignores it
+     * unless an AZ100 group is the active output.
+     *
+     * <p>Called from {@code install()} and from every probe arming.  Install
+     * can run before {@code Application.attach} (the module installs from
+     * {@code onPackageReady}), so the first attempt may have no context; a
+     * missing context is not counted as an attempt.  Registration is best
+     * effort -- if the service refuses the callback the module keeps the
+     * activation-time probe.
+     */
+    private fun ensurePlaybackGuard() {
+        if (!PLAYBACK_GUARD_ARMED.compareAndSet(false, true)) return;
+        val context = applicationContext();
+        if (context == null) {
+            PLAYBACK_GUARD_ARMED.set(false);
+            return;
+        }
+        try {
+            val audio = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                    ?: return;
+            audio.registerAudioPlaybackCallback(
+                    object : AudioManager.AudioPlaybackCallback() {
+                        override fun onPlaybackConfigChanged(
+                                configs: MutableList<AudioPlaybackConfiguration>?) {
+                            // The platform reports the configurations that are
+                            // active now; an empty list means nothing plays.
+                            if (configs.isNullOrEmpty()) return;
+                            armLeaStreamProbe("playbackStarted", LEA_STREAM_PROBE_MS);
+                        }
+                    },
+                    android.os.Handler(android.os.Looper.getMainLooper()));
+            Logs.trace("dual-coexist: playback activity guard armed");
+        } catch (t: Throwable) {
+            Logs.trace("dual-coexist: playback activity guard unavailable - " + t);
+        }
+    }
+
+
     /** The live {@code HeadsetService}, via the LE Audio service's own adapter. */
     private fun headsetServiceOf(leaService: Any?): Any? {
         if (leaService == null) return null;
@@ -3183,6 +3433,7 @@ object OplusDualModeCoexistHook {
     private fun resumeLeaLocally() {
         val wasYielding = inLeaYieldWindow();
         LEA_HANDOFF.resumeLocally();
+        LEA_STREAM_GUARD.onLocalSelection();
         LeAudioTransportHook.onLocalLeaSelection();
         LEA_CONNECT_LAST_ATTEMPT.clear();
         if (wasYielding) Logs.trace("dual-coexist: handoff/disconnect ended by local selection");
@@ -3203,11 +3454,11 @@ object OplusDualModeCoexistHook {
      * to a classic profile ({@code removeActiveDevice(true)}), and an active group
      * going inactive while an AZ100 is still on LE Audio.
      */
-    private fun openLeaYieldWindow(reason: String) {
+    private fun openLeaYieldWindow(reason: String, durationMs: Long = LEA_YIELD_WINDOW_MS) {
         // Re-arm on every sighting so a long hand-over does not time out mid-way,
         // but only announce the first one -- the hooks can reach here in a burst.
         val alreadyOpen = inLeaYieldWindow();
-        LEA_HANDOFF.yieldTemporarily(SystemClock.elapsedRealtime());
+        LEA_HANDOFF.yieldTemporarily(SystemClock.elapsedRealtime(), durationMs);
         if (!alreadyOpen) {
             Logs.trace("dual-coexist: leaYieldWindow opened (" + reason + ")");
         }

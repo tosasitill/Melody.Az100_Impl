@@ -259,4 +259,35 @@ class LeaHandoffStateTest {
         state.resumeLocally()
         assertFalse(state.shouldSuppressAutoConnect(90_001L))
     }
+
+    @Test
+    fun anExtendedHoldStaysOpenPastTheNormalWindow() {
+        state.yieldTemporarily(1_000L, 60_000L)
+        assertTrue(state.isYielding(61_000L))
+        assertFalse(state.isYielding(61_001L))
+        assertFalse(state.shouldReconnectClassic(61_000L, false))
+    }
+
+    @Test
+    fun localSelectionEndsAnExtendedHold() {
+        state.yieldTemporarily(1_000L, 60_000L)
+        state.resumeLocally()
+        assertFalse(state.isYielding(2_000L))
+        state.yieldTemporarily(2_000L)
+        assertFalse(state.isYielding(32_001L))
+    }
+
+    @Test
+    fun theHandoffTrailingAFailoverCannotShortenItsHold() {
+        state.yieldTemporarily(1_000L, 60_000L)
+        // The group-deactivation afterHook re-arms the window right after the
+        // fallback did; that must not drop back to the 30 s default.
+        state.yieldTemporarily(2_000L)
+        assertTrue(state.isYielding(62_000L))
+        assertFalse(state.isYielding(62_001L))
+        // Once it really expired, a normal window applies again.
+        state.yieldTemporarily(62_001L)
+        assertTrue(state.isYielding(92_001L))
+        assertFalse(state.isYielding(92_002L))
+    }
 }

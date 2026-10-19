@@ -7,6 +7,7 @@ internal class LeaHandoffState(private val yieldWindowMs: Long) {
 
     private val contextsByGroup = mutableMapOf<Int, Int>()
     private var yieldAt: Long? = null
+    private var yieldDurationMs = yieldWindowMs
     private var remoteGroupId: Int? = null
     private var remoteAclReleased = false
     private var manuallyDisconnected = false
@@ -15,7 +16,7 @@ internal class LeaHandoffState(private val yieldWindowMs: Long) {
     fun isYielding(now: Long): Boolean {
         if (manuallyDisconnected || remoteGroupId != null) return true
         val openedAt = yieldAt ?: return false
-        return now >= openedAt && now - openedAt <= yieldWindowMs
+        return now >= openedAt && now - openedAt <= yieldDurationMs
     }
 
     /** Explicit selection can end the window; background connects must wait. */
@@ -60,15 +61,25 @@ internal class LeaHandoffState(private val yieldWindowMs: Long) {
     @Synchronized
     fun isRemoteYielding(): Boolean = remoteGroupId != null
 
+    /**
+     * @param durationMs how long the window lasts; a failed LE stream holds
+     *     longer on every trip than a normal handoff.
+     */
     @Synchronized
-    fun yieldTemporarily(now: Long) {
+    fun yieldTemporarily(now: Long, durationMs: Long = yieldWindowMs) {
+        // Releases arrive in bursts (the API release, then the group
+        // deactivation that follows it).  Re-arm the start every time, but let
+        // the longer fail-over hold survive the normal handoff that trails it.
+        val keepLonger = yieldAt != null && yieldDurationMs > durationMs && isYielding(now)
         yieldAt = now
+        if (!keepLonger) yieldDurationMs = durationMs
     }
 
     @Synchronized
     fun yieldRemotely(groupId: Int, now: Long) {
         remoteGroupId = groupId
         yieldAt = now
+        yieldDurationMs = yieldWindowMs
     }
 
     /** AZ100 frees its LE links with 0x14 when another host takes its resources. */
@@ -90,6 +101,7 @@ internal class LeaHandoffState(private val yieldWindowMs: Long) {
         if (mediaAvailable && remoteGroupId == groupId && !remoteAclReleased) {
             remoteGroupId = null
             yieldAt = null
+            yieldDurationMs = yieldWindowMs
             return ContextChange.RESUMED
         }
         // Initial zero contexts are part of bring-up on this ROM. Only a real
@@ -107,6 +119,7 @@ internal class LeaHandoffState(private val yieldWindowMs: Long) {
         remoteGroupId = null
         remoteAclReleased = false
         yieldAt = null
+        yieldDurationMs = yieldWindowMs
         contextsByGroup.clear()
     }
 
